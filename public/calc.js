@@ -12,6 +12,7 @@
 
   var RATES = {
     meta: {
+      version: "1.1.0",
       utility: "Con Edison",
       serviceClass: "SC1 (Rate I) — NYC Residential",
       basis: "Standard = ConEd 2025 published SC1 NYC average (grossed up for GRT + sales tax, excl. customer charge). TOU supply = ConEd current published residential TOU supply.",

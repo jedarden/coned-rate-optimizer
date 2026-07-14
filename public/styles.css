@@ -76,3 +76,4 @@ tr.current td { font-weight: 700; }
 .foot p { margin: 10px 0; }
 .foot a { color: var(--accent); word-break: break-all; }
 .disclaimer { font-style: italic; }
+.ver { font-size: .78rem; color: var(--muted); opacity: .8; margin-top: 14px; }

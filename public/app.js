@@ -123,4 +123,8 @@
     var s = window.CONED_SAMPLE;
     render(C.analyze({ months: s.months, ndays: s.ndays }), s.label);
   });
+
+  // Show version on load (for bug reports)
+  var vEl = document.getElementById("version");
+  if (vEl && C.RATES.meta.version) vEl.textContent = "v" + C.RATES.meta.version;
 })();
