@@ -80,3 +80,23 @@ tr.est td:first-child { color: var(--muted); }
 .foot a { color: var(--accent); word-break: break-all; }
 .disclaimer { font-style: italic; }
 .ver { font-size: .78rem; color: var(--muted); opacity: .8; margin-top: 14px; }
+.actions { margin: -6px 0 18px; }
+.btn-share { background: transparent; border: 1px solid var(--line); color: var(--accent); border-radius: 999px; padding: 8px 16px; font-size: .9rem; font-weight: 600; cursor: pointer; }
+.btn-share:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.howto { margin-top: 16px; font-size: .92rem; }
+.howto summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.howto ol { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+.howto li { margin: 6px 0; } .howto strong { color: var(--ink); }
+.math { margin: 10px 0 4px; }
+.math > summary { cursor: pointer; font-weight: 600; color: var(--muted); font-size: .9rem; }
+.mplan { margin: 14px 0; }
+.mplan .mh { font-size: .95rem; margin-bottom: 4px; }
+.mtab { width: 100%; border-collapse: collapse; }
+.mtab td { padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: .86rem; }
+.mtab td.det { color: var(--muted); } .mtab td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.faq { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--line); }
+.faq h2 { font-size: 1.2rem; margin: 0 0 10px; }
+.faq h3 { font-size: 1rem; margin: 20px 0 6px; }
+.faq p { color: var(--muted); margin: 0 0 6px; }
+.faq strong, .faq em { color: var(--ink); font-style: normal; font-weight: 600; }
+.faq a { color: var(--accent); }

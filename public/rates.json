@@ -1,0 +1,10 @@
+{
+  "_comment": "ConEd SC1 residential rates. Edit + redeploy to update the tool with no code change. app.js fetches this and overrides the defaults baked into calc.js. Cents are expressed as $/kWh; demand rates are $/kW.",
+  "meta": {
+    "asOf": "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07."
+  },
+  "standard": { "allIn": 0.338267, "commodity": 0.137533, "delivery": 0.183233, "customer": 16.33 },
+  "tou": { "offPeak": 0.0522, "peakSummer": 0.2786, "peakWinter": 0.1711, "gross": 1.10, "customer": 21.00 },
+  "steadyUse": { "demand": { "peakSummer": 27.35, "peakWinter": 21.04, "off": 7.17 }, "customer": 16.33 },
+  "smartEnergy": { "demand": { "peakSummer": 30.68, "peakWinter": 23.60, "off": 10.06 }, "customer": 16.33 }
+}

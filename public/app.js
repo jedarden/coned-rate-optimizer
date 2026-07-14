@@ -38,6 +38,49 @@
       '<span><span class="sw" style="background:var(--warn)"></span>Time-of-Use</span></div>';
   }
 
+  // "Show the math" — per-plan line items on the user's own numbers
+  function planMath(p, factor) {
+    var lines = p.breakdown.map(function (l) {
+      return '<tr><td>' + l.label + '</td><td class="det">' + l.detail + '</td><td class="num">' + usd(l.amount * factor) + '/yr</td></tr>';
+    }).join("");
+    return '<div class="mplan"><div class="mh">' + p.name + ' · <strong>' + usd(p.cost * factor) + '/yr</strong>' +
+      (p.demand ? ' <span class="tag">demand estimate</span>' : '') + '</div>' +
+      '<table class="mtab"><tbody>' + lines + '</tbody></table></div>';
+  }
+
+  // Privacy-safe share card: rendered in-browser, shared/downloaded by the user. Nothing uploaded.
+  function shareCard(a) {
+    var W = 1200, H = 630, c = document.createElement("canvas"); c.width = W; c.height = H;
+    var g = c.getContext("2d"), F = "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif";
+    g.fillStyle = "#0e1116"; g.fillRect(0, 0, W, H);
+    g.fillStyle = "#5ea0f0"; g.fillRect(0, 0, W, 12);
+    g.fillStyle = "#9aa4b2"; g.font = "600 34px " + F; g.fillText("ConEd Rate Optimizer", 70, 112);
+    var save = a.savingsIfSwitch > 1;
+    g.fillStyle = save ? "#4ad08a" : "#e0a05a"; g.font = "800 92px " + F;
+    g.fillText(save ? "Save " + usd(a.savingsIfSwitch * a.annualFactor) + "/yr" : "Stay on Standard", 70, 240);
+    g.fillStyle = "#e8eaed"; g.font = "400 32px " + F;
+    g.fillText(save ? "by switching to " + a.cheapest.name : "no ConEd plan switch lowers this bill", 70, 300);
+    g.font = "400 30px " + F; var y = 392;
+    a.plans.forEach(function (p) {
+      g.fillStyle = "#9aa4b2"; g.textAlign = "left"; g.fillText(p.name + (p.demand ? " (est.)" : ""), 70, y);
+      g.fillStyle = "#e8eaed"; g.textAlign = "right"; g.fillText(usd(p.cost * a.annualFactor) + "/yr", 1130, y);
+      y += 48;
+    });
+    g.textAlign = "left"; g.fillStyle = "#5ea0f0"; g.font = "600 30px " + F; g.fillText("coned.jedarden.com", 70, 592);
+    g.textAlign = "right"; g.fillStyle = "#5b6472"; g.font = "400 24px " + F; g.fillText("computed in your browser · v" + R.meta.version, 1130, 592);
+    g.textAlign = "left";
+    c.toBlob(function (blob) {
+      if (!blob) return;
+      var file = new File([blob], "coned-rate-result.png", { type: "image/png" });
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: "ConEd Rate Optimizer", text: "I checked whether switching ConEd rate plans saves money — coned.jedarden.com" }).catch(function () {});
+      } else {
+        var url = URL.createObjectURL(blob), el = document.createElement("a"); el.href = url; el.download = "coned-rate-result.png"; el.click();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      }
+    }, "image/png");
+  }
+
   function render(a, label) {
     err.hidden = true;
     var saves = a.savingsIfSwitch > 1;                 // >$1 to avoid rounding noise
@@ -78,6 +121,7 @@
 
     results.innerHTML =
       '<div class="verdict ' + vClass + '">' + vHtml + '</div>' +
+      '<div class="actions"><button id="share-btn" class="btn-share" type="button">↗ Share this result</button></div>' +
       '<div class="stats">' +
         '<div class="stat"><div class="k">Your usage</div><div class="v">' + Math.round(a.totalKwh * a.annualFactor).toLocaleString() + ' kWh/yr</div></div>' +
         '<div class="stat"><div class="k">Current plan (Standard)</div><div class="v">' + usd(a.standardAnnual) + '/yr</div></div>' +
@@ -88,18 +132,22 @@
       '<table><thead><tr><th>Rate plan</th><th class="num">Annual cost</th><th class="num">vs. Standard</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>' + demandNote +
       '<p class="legend">No separate residential EV rate — EV owners use Time-of-Use plus SmartCharge NY rebates (a separate program, not modeled).</p>' +
+      '<details class="math"><summary>Show the math — line items on your numbers</summary>' +
+        a.plans.map(function (p) { return planMath(p, a.annualFactor); }).join("") +
+        '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
       '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months);
 
     // footer assumptions/sources
     $("assumptions").innerHTML = '<strong>Assumptions:</strong> ' + R.meta.basis + ' ' + R.meta.peakWindow + ' ' + R.meta.caveats.join(" ");
     $("sources").innerHTML = '<strong>Sources:</strong> ' + R.meta.sources.map(function (s) { return '<a href="' + s + '" target="_blank" rel="noopener">' + s.replace(/^https?:\/\//, "").split("/")[0] + "</a>"; }).join(" · ");
+    var sb = $("share-btn"); if (sb) sb.addEventListener("click", function () { shareCard(a); });
     results.hidden = false;
     results.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function handleText(text, label) {
-    try { render(C.analyze(C.parseGreenButton(text)), label); }
+    try { render(C.analyze(C.parse(text)), label); }   // parse() auto-detects CSV vs XML/ESPI
     catch (e) { showError(e.message); }
   }
   function handleFile(f) {
@@ -136,5 +184,14 @@
 
   // Show version on load (for bug reports)
   var vEl = document.getElementById("version");
-  if (vEl && C.RATES.meta.version) vEl.textContent = "v" + C.RATES.meta.version;
+  function showVer() { if (vEl && C.RATES.meta.version) vEl.textContent = "v" + C.RATES.meta.version; }
+  showVer();
+
+  // Optional runtime rate override — editing rates.json updates rates with no code change.
+  if (typeof fetch === "function") {
+    fetch("rates.json", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j) { C.applyRates(j); showVer(); } })
+      .catch(function () {});
+  }
 })();

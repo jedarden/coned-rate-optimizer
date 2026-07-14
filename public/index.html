@@ -4,7 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ConEd Rate Optimizer — will switching plans lower your bill?</title>
-  <meta name="description" content="Upload your Con Edison usage data and see, precisely, whether switching rate plans would lower your bill. Runs entirely in your browser — nothing is uploaded." />
+  <meta name="description" content="Free, private, in-browser tool: upload your Con Edison usage and see if switching rate plans (Standard, Time-of-Use, Steady Use, Smart Energy) actually lowers your bill. Most people don't save — and it tells you honestly." />
+  <link rel="canonical" href="https://coned.jedarden.com/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://coned.jedarden.com/" />
+  <meta property="og:title" content="ConEd Rate Optimizer — will switching plans lower your bill?" />
+  <meta property="og:description" content="Upload your Con Edison usage; see if switching rate plans saves money. Runs entirely in your browser — nothing is uploaded. Honest by design: most people don't save." />
+  <meta property="og:image" content="https://coned.jedarden.com/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="ConEd Rate Optimizer" />
+  <meta name="twitter:description" content="Will switching your ConEd rate plan lower your bill? Find out — privately, in your browser." />
+  <meta name="twitter:image" content="https://coned.jedarden.com/og.png" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -17,19 +27,41 @@
 
     <section class="card" id="input-card">
       <div id="drop" class="drop" tabindex="0" role="button" aria-label="Upload your ConEd data">
-        <input type="file" id="file" accept=".zip,.csv,.txt" hidden />
+        <input type="file" id="file" accept=".zip,.csv,.txt,.xml" hidden />
         <div class="drop-inner">
-          <strong>Drop your ConEd Green Button file here — .zip or .csv</strong>
+          <strong>Drop your ConEd Green Button file here — .zip, .csv, or .xml</strong>
           <span>or click to choose a file</span>
-          <small>ConEd → My Account → Energy Use → Green Button “Download my data” (CSV format). Upload the .zip as-is — no need to unzip it first.</small>
+          <small>Upload the .zip as-is — no need to unzip. Both CSV and XML (ESPI) exports work.</small>
         </div>
       </div>
       <div class="or">or</div>
       <button id="sample-btn" class="btn">Try it with a sample home →</button>
       <p id="error" class="error" hidden></p>
+      <details class="howto">
+        <summary>How do I get my ConEd file? (about 60 seconds)</summary>
+        <ol>
+          <li>Sign in at <a href="https://www.coned.com" target="_blank" rel="noopener">coned.com</a> and open <strong>My Account</strong>.</li>
+          <li>Go to <strong>Billing &amp; Usage → Energy Use</strong> (or search “Green Button”).</li>
+          <li>Click <strong>Green Button “Download my data”</strong>, choose <strong>CSV</strong>, and pick the widest range (up to ~1 year for the most accurate result).</li>
+          <li>ConEd emails/gives you a <strong>.zip</strong> — drop it here as-is. It never leaves your device.</li>
+        </ol>
+      </details>
     </section>
 
     <section id="results" hidden></section>
+
+    <section class="faq">
+      <h2>How ConEd residential rate plans work</h2>
+      <p>Every Con Edison home is on the <strong>Standard (SC1)</strong> rate by default. You can switch — but switching only helps if your usage pattern fits the plan. This tool prices your <em>actual</em> usage against each plan so you don't guess.</p>
+      <h3>Is ConEd Time-of-Use worth it?</h3>
+      <p>Time-of-Use charges more for electricity used <strong>8am–midnight</strong> and much less <strong>midnight–8am</strong>. It only saves money if a large share of your usage is overnight (e.g., EV charging). For most homes — where usage peaks in the evening — Time-of-Use costs <em>more</em>, not less. This tool shows you the exact number for your home.</p>
+      <h3>What are the Steady Use and Smart Energy (demand) plans?</h3>
+      <p>These bill on your <strong>peak demand in kilowatts (kW)</strong> — the most power you draw at once — rather than total kWh. They tend to reward <strong>flat, steady loads</strong> (heat pumps, always-on homes) and punish spiky ones. This tool derives your peak demand from the interval data to estimate them, something a kWh-only comparison can't do.</p>
+      <h3>Is there a ConEd EV rate?</h3>
+      <p>Not for residential customers — ConEd's EV Time-of-Use rate is commercial-only. Residential EV owners use the regular Residential Time-of-Use rate plus <strong>SmartCharge NY</strong> rebates (a separate program).</p>
+      <h3>Is my data private?</h3>
+      <p>Completely. Everything runs in your browser — your usage file is never uploaded, stored, or sent anywhere. There's no server and no account.</p>
+    </section>
 
     <footer class="foot">
       <details>
