@@ -57,17 +57,18 @@
         a.peakPct.toFixed(0) + '% of your usage falls in peak hours (8am–midnight). Rate-switching only helps off-peak-heavy homes.</p>';
     }
 
-    // plan table
+    // plan table — Standard + TOU are precise; demand plans are flagged estimates
     var rows = a.plans.map(function (p) {
       var d = p.cost - a.standardCost;
       var deltaCell = p.current ? '<span class="pill">current</span>'
         : '<span class="' + (d > 0 ? "delta-up" : "delta-down") + '">' + signed(d * a.annualFactor) + '/yr</span>';
-      return '<tr' + (p.current ? ' class="current"' : '') + '><td>' + p.name + '</td>' +
+      var tag = p.demand ? ' <span class="tag">demand-based est. · ' + p.eligibility + '</span>' : '';
+      return '<tr' + (p.current ? ' class="current"' : (p.demand ? ' class="est"' : '')) + '><td>' + p.name + tag + '</td>' +
         '<td class="num">' + usd(p.cost * a.annualFactor) + '/yr</td><td class="num">' + deltaCell + '</td></tr>';
     }).join("");
-    var variantRows = R.variants.map(function (v) {
-      return '<tr class="variant"><td>' + v.name + '</td><td class="num">—</td><td>' + v.note + '</td></tr>';
-    }).join("");
+    var demandNote = a.demandOpportunity
+      ? '<p class="opp">⚠ Your load looks flat enough that demand-based plans (Steady Use / Smart Energy) come out cheaper in this estimate. But that estimate holds supply flat — ConEd applies time-of-use supply on those plans, which isn\'t published exactly — so treat it as a ballpark worth confirming with ConEd, not a guarantee.</p>'
+      : (a.hasDemand ? '<p class="legend">Demand-based plans bill on your peak kW (not total kWh) — ballpark estimates (supply held flat), best for heat-pump / flat-demand homes.</p>' : '');
 
     // load shape
     var pk = a.peakPct, of = 100 - pk;
@@ -85,7 +86,8 @@
       (label ? '<p class="legend">Showing: ' + label + '</p>' : '') +
       '<h3 class="sec">Every plan, priced on your usage</h3>' +
       '<table><thead><tr><th>Rate plan</th><th class="num">Annual cost</th><th class="num">vs. Standard</th></tr></thead>' +
-      '<tbody>' + rows + variantRows + '</tbody></table>' +
+      '<tbody>' + rows + '</tbody></table>' + demandNote +
+      '<p class="legend">No separate residential EV rate — EV owners use Time-of-Use plus SmartCharge NY rebates (a separate program, not modeled).</p>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
       '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months);
 

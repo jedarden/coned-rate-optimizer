@@ -60,6 +60,9 @@ tr.current td { font-weight: 700; }
 .pill { font-size: .72rem; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .delta-up { color: var(--warn); } .delta-down { color: var(--good); }
 .variant td { color: var(--muted); font-size: .86rem; }
+.tag { display: inline-block; font-size: .68rem; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); white-space: nowrap; }
+tr.est td:first-child { color: var(--muted); }
+.opp { font-size: .9rem; background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
 /* load shape */
 .shape { display: flex; height: 30px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); margin: 6px 0; }
 .shape .peak { background: var(--warn); } .shape .off { background: var(--good); }
