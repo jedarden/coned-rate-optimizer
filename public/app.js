@@ -103,9 +103,17 @@
   function handleFile(f) {
     if (!f) return;
     var rd = new FileReader();
-    rd.onload = function () { handleText(String(rd.result), f.name); };
     rd.onerror = function () { showError("could not read the file."); };
-    rd.readAsText(f);
+    rd.onload = function () {
+      var buf = rd.result, u8 = new Uint8Array(buf);
+      var isZip = u8[0] === 0x50 && u8[1] === 0x4B && u8[2] === 0x03 && u8[3] === 0x04; // "PK\x03\x04"
+      if (isZip) {
+        C.unzipCsv(buf).then(function (t) { handleText(t, f.name); }).catch(function (e) { showError(e.message); });
+      } else {
+        handleText(new TextDecoder().decode(u8), f.name);
+      }
+    };
+    rd.readAsArrayBuffer(f);
   }
 
   // events

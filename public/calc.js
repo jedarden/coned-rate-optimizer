@@ -12,7 +12,7 @@
 
   var RATES = {
     meta: {
-      version: "1.1.0",
+      version: "1.2.0",
       utility: "Con Edison",
       serviceClass: "SC1 (Rate I) — NYC Residential",
       basis: "Standard = ConEd 2025 published SC1 NYC average (grossed up for GRT + sales tax, excl. customer charge). TOU supply = ConEd current published residential TOU supply.",
@@ -205,7 +205,43 @@
     };
   }
 
-  var api = { RATES: RATES, parseGreenButton: parseGreenButton, costStandard: costStandard, costTOU: costTOU, analyze: analyze };
+  // --- ZIP support: pull the CSV out of a Green Button .zip, entirely in-browser ---
+  function inflateRaw(bytes) {
+    if (typeof DecompressionStream === "undefined")
+      return Promise.reject(new Error("this browser can't unzip in-page — please unzip and upload the CSV inside."));
+    var stream = new Response(bytes).body.pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Response(stream).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
+  }
+
+  // Returns a Promise of the text of the first .csv (or first) entry in a ZIP ArrayBuffer.
+  function unzipCsv(buf) {
+    var dv = new DataView(buf), u8 = new Uint8Array(buf), n = u8.length, dec = new TextDecoder();
+    var eocd = -1, lim = Math.max(0, n - 22 - 65536);
+    for (var i = n - 22; i >= lim; i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }  // PK\x05\x06
+    if (eocd < 0) return Promise.reject(new Error("that .zip looks corrupt (no directory found)."));
+    var cdOffset = dv.getUint32(eocd + 16, true), count = dv.getUint16(eocd + 10, true), p = cdOffset, chosen = null;
+    for (var e = 0; e < count; e++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) break;  // PK\x01\x02 central dir entry
+      var entry = {
+        name: dec.decode(u8.subarray(p + 46, p + 46 + dv.getUint16(p + 28, true))),
+        method: dv.getUint16(p + 10, true),
+        compSize: dv.getUint32(p + 20, true),
+        lho: dv.getUint32(p + 42, true)
+      };
+      if (/\.csv$/i.test(entry.name)) { chosen = entry; break; }
+      if (!chosen) chosen = entry;
+      p += 46 + dv.getUint16(p + 28, true) + dv.getUint16(p + 30, true) + dv.getUint16(p + 32, true);
+    }
+    if (!chosen) return Promise.reject(new Error("couldn't find a file inside the .zip."));
+    if (dv.getUint32(chosen.lho, true) !== 0x04034b50) return Promise.reject(new Error("that .zip looks corrupt (bad file header)."));
+    var start = chosen.lho + 30 + dv.getUint16(chosen.lho + 26, true) + dv.getUint16(chosen.lho + 28, true);
+    var comp = u8.subarray(start, start + chosen.compSize);
+    if (chosen.method === 0) return Promise.resolve(dec.decode(comp));           // stored
+    if (chosen.method === 8) return inflateRaw(comp).then(function (raw) { return dec.decode(raw); });  // deflate
+    return Promise.reject(new Error("unsupported compression in the .zip (method " + chosen.method + ")."));
+  }
+
+  var api = { RATES: RATES, parseGreenButton: parseGreenButton, costStandard: costStandard, costTOU: costTOU, analyze: analyze, unzipCsv: unzipCsv };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ConedCalc = api;
 })(typeof window !== "undefined" ? window : globalThis);
