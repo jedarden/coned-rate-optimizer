@@ -1,0 +1,6 @@
+# Infra/deploy details stay local or in declarative-config — never in the public mirror
+/deploy/
+/DEPLOY.md
+node_modules/
+.wrangler/
+.DS_Store

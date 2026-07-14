@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ConEd Rate Optimizer — will switching plans lower your bill?</title>
+  <meta name="description" content="Upload your Con Edison usage data and see, precisely, whether switching rate plans would lower your bill. Runs entirely in your browser — nothing is uploaded." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <h1>Will switching your ConEd rate plan actually lower your bill?</h1>
+      <p class="sub">Upload your Con Edison usage export and find out — precisely, for your real usage. Most people <em>don't</em> save, and we'll tell you honestly if that's you.</p>
+      <p class="privacy">🔒 Your data never leaves your device. All calculations run in your browser — nothing is uploaded, stored, or sent anywhere.</p>
+    </header>
+
+    <section class="card" id="input-card">
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="Upload your ConEd CSV">
+        <input type="file" id="file" accept=".csv,.txt" hidden />
+        <div class="drop-inner">
+          <strong>Drop your ConEd “Download my data” CSV here</strong>
+          <span>or click to choose a file</span>
+          <small>Get it from ConEd → My Account → Energy Use → Green Button “Download my data”.</small>
+        </div>
+      </div>
+      <div class="or">or</div>
+      <button id="sample-btn" class="btn">Try it with a sample home →</button>
+      <p id="error" class="error" hidden></p>
+    </section>
+
+    <section id="results" hidden></section>
+
+    <footer class="foot">
+      <details>
+        <summary>Rate plans &amp; assumptions</summary>
+        <p><strong>ConEd residential (SC1) plans:</strong> Standard, Residential Time-of-Use, EV Time-of-Use, Steady Use (heat-pump), Smart Energy Billing. This tool auto-evaluates <strong>Standard vs. Time-of-Use</strong> — the choice that applies to everyone; the others need an EV, heat pump, or enrollment.</p>
+        <p id="assumptions"></p>
+        <p id="sources"></p>
+        <p class="disclaimer">Estimate only. Not affiliated with Con Edison. Verify against your actual bill before switching.</p>
+      </details>
+    </footer>
+  </main>
+
+  <script src="calc.js"></script>
+  <script src="sample.js"></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
