@@ -1,0 +1,7 @@
+issue_prefixes: [bf]
+default_priority: 2
+default_type: task
+claim_ttl_minutes: 30
+secret_protection:
+  allowlist:
+    - "declarative-config/k8s/iad-ci/argo-workflows"
