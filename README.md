@@ -4,6 +4,8 @@ A single-page, **100% client-side** tool: upload your Con Edison "Download my da
 
 Intended demo home: **coned.jedarden.com** (Cloudflare Pages).
 
+**Privacy note:** The site uses Cloudflare Web Analytics (cookie-less, privacy-safe) to measure visit traffic and user interaction (sample button clicks, successful parses, parse errors). Your usage data is never uploaded or stored — only anonymous pageview counts and interaction events are collected.
+
 ## What it does
 
 - Parses ConEd 15-minute interval Green Button CSV/TSV entirely in-browser.
@@ -20,18 +22,35 @@ public/            <- deploy this directory to Cloudflare Pages
   calc.js          <- pure calc core (parse + price); also runs under Node
   sample.js        <- built-in anonymized example (monthly aggregates only)
   app.js           <- DOM glue
-verify.js          <- Node check: `node verify.js path/to/greenbutton.csv`
+  rates.json       <- live rate data overrides (optional)
+verify.js          <- Node verification script
+test/              <- automated test suite and fixtures
+  test.js          <- automated tests for calc.js core
+  fixtures/
+    sample-greenbutton.csv  <- sample data for testing
 ```
 
 ## Run locally
 
 Any static server, e.g. `python3 -m http.server -d public 8000` → http://localhost:8000
 
-## Verify the math
+## Test the calc.js core
 
+### Run automated test suite
+```bash
+node test/test.js
+# Runs all tests and exits with status code
 ```
-node verify.js ~/scratch/coned/electricty.csv
-# Standard ≈ $3,716/yr · TOU ≈ $4,335/yr · switching COSTS ~$619
+
+### Verify the math with test fixture
+```bash
+node verify.js
+# Uses test/fixtures/sample-greenbutton.csv by default
+```
+
+### Verify with your own data
+```bash
+node verify.js ~/path/to/your/green-button-export.csv
 ```
 
 ## Rate model & caveats

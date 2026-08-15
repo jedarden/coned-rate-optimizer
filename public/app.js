@@ -4,24 +4,34 @@
   var C = window.ConedCalc, R = C.RATES;
   var $ = function (id) { return document.getElementById(id); };
   var drop = $("drop"), file = $("file"), err = $("error"), results = $("results");
+  var evToggle = $("ev-toggle"), lastParsed = null, lastLabel = "";
 
-  var usd = function (n) { return "$" + Math.round(n).toLocaleString("en-US"); };
+  var usd = function (n) { return (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
   var usd2 = function (n) { return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   var signed = function (n) { return (n >= 0 ? "+" : "−") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
 
-  function showError(msg) { err.textContent = "Couldn't read that file: " + msg; err.hidden = false; results.hidden = true; }
+  function showError(msg) {
+    err.textContent = "Couldn't read that file: " + msg;
+    err.hidden = false;
+    results.hidden = true;
+    // Track parse error for analytics funnel
+    if (window._cf && window._cf.event) { window._cf.event('parse_error'); }
+  }
 
-  function monthCost(m) {
+  function calcOptions() { return { smartChargeNY: !!(evToggle && evToggle.checked) }; }
+
+  function monthCost(m, smartCharge) {
     var std = m.total * R.standard.allIn + R.standard.customer;
     var pr = m.summer ? R.tou.peakSummer : R.tou.peakWinter;
-    var tou = m.total * R.tou.nonCommodity + (m.peak * pr + m.off * R.tou.offPeak) * R.tou.gross + R.tou.customer;
+    var credit = smartCharge ? m.off * R.smartChargeNY.offPeakCredit : 0;
+    var tou = m.total * R.tou.nonCommodity + (m.peak * pr + m.off * R.tou.offPeak) * R.tou.gross + R.tou.customer - credit;
     return { std: std, tou: tou };
   }
 
-  function monthlyChart(months) {
+  function monthlyChart(months, smartCharge) {
     var W = 760, H = 200, padB = 26, padL = 4, n = months.length;
     var per = W / n, bw = Math.min(14, per / 3);
-    var costs = months.map(monthCost);
+    var costs = months.map(function (m) { return monthCost(m, smartCharge); });
     var max = Math.max.apply(null, costs.map(function (c) { return Math.max(c.std, c.tou); })) || 1;
     var svg = ['<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Monthly cost: Standard vs Time-of-Use">'];
     var base = H - padB;
@@ -83,6 +93,8 @@
 
   function render(a, label) {
     err.hidden = true;
+    // Track successful parse for analytics funnel
+    if (window._cf && window._cf.event) { window._cf.event('parse_success'); }
     var saves = a.savingsIfSwitch > 1;                 // >$1 to avoid rounding noise
     var vClass = saves ? "good" : "warn";
     var period = (a.ndays >= 350 && a.ndays <= 385) ? "over the past year" : "over " + a.ndays + " days (annualized)";
@@ -105,13 +117,21 @@
       var d = p.cost - a.standardCost;
       var deltaCell = p.current ? '<span class="pill">current</span>'
         : '<span class="' + (d > 0 ? "delta-up" : "delta-down") + '">' + signed(d * a.annualFactor) + '/yr</span>';
-      var tag = p.demand ? ' <span class="tag">demand-based est. · ' + p.eligibility + '</span>' : '';
+      var tag = p.demand ? ' <span class="tag">demand-based est. · ' + p.eligibility + '</span>'
+        : (p.smartChargeNY && p.smartChargeNY.enabled ? ' <span class="tag">includes SmartCharge NY what-if</span>' : '');
       return '<tr' + (p.current ? ' class="current"' : (p.demand ? ' class="est"' : '')) + '><td>' + p.name + tag + '</td>' +
         '<td class="num">' + usd(p.cost * a.annualFactor) + '/yr</td><td class="num">' + deltaCell + '</td></tr>';
     }).join("");
+    var evTableLine = a.smartChargeNY.enabled
+      ? '<tr class="credit"><td>SmartCharge NY off-peak credit <span class="tag">TOU add-on</span></td>' +
+        '<td class="num">' + usd(-a.smartChargeNY.credit * a.annualFactor) + '/yr</td>' +
+        '<td class="num"><span class="tag">included in TOU</span></td></tr>' : '';
     var demandNote = a.demandOpportunity
       ? '<p class="opp">⚠ Your load looks flat enough that demand-based plans (Steady Use / Smart Energy) come out cheaper in this estimate. But that estimate holds supply flat — ConEd applies time-of-use supply on those plans, which isn\'t published exactly — so treat it as a ballpark worth confirming with ConEd, not a guarantee.</p>'
       : (a.hasDemand ? '<p class="legend">Demand-based plans bill on your peak kW (not total kWh) — ballpark estimates (supply held flat), best for heat-pump / flat-demand homes.</p>' : '');
+    var evNote = a.smartChargeNY.enabled
+      ? '<p class="legend">SmartCharge NY what-if: ' + (R.smartChargeNY.offPeakCredit * 100).toFixed(0) + '¢/kWh for midnight–8am charging is applied to all measured off-peak kWh. Con Edison currently says Residential Time-of-Use customers are not eligible, so verify eligibility before relying on this combined estimate.</p>'
+      : '<p class="legend">No separate residential EV rate — EV owners use Time-of-Use plus SmartCharge NY rebates. Turn on the EV option above to see the off-peak incentive scenario.</p>';
 
     // load shape
     var pk = a.peakPct, of = 100 - pk;
@@ -130,13 +150,12 @@
       (label ? '<p class="legend">Showing: ' + label + '</p>' : '') +
       '<h3 class="sec">Every plan, priced on your usage</h3>' +
       '<table><thead><tr><th>Rate plan</th><th class="num">Annual cost</th><th class="num">vs. Standard</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody></table>' + demandNote +
-      '<p class="legend">No separate residential EV rate — EV owners use Time-of-Use plus SmartCharge NY rebates (a separate program, not modeled).</p>' +
+      '<tbody>' + rows + evTableLine + '</tbody></table>' + demandNote + evNote +
       '<details class="math"><summary>Show the math — line items on your numbers</summary>' +
         a.plans.map(function (p) { return planMath(p, a.annualFactor); }).join("") +
         '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
-      '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months);
+      '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months, a.smartChargeNY.enabled);
 
     // footer assumptions/sources
     $("assumptions").innerHTML = '<strong>Assumptions:</strong> ' + R.meta.basis + ' ' + R.meta.peakWindow + ' ' + R.meta.caveats.join(" ");
@@ -147,7 +166,11 @@
   }
 
   function handleText(text, label) {
-    try { render(C.analyze(C.parse(text)), label); }   // parse() auto-detects CSV vs XML/ESPI
+    try {
+      lastParsed = C.parse(text);
+      lastLabel = label;
+      render(C.analyze(lastParsed, calcOptions()), label);
+    }   // parse() auto-detects CSV vs XML/ESPI
     catch (e) { showError(e.message); }
   }
   function handleFile(f) {
@@ -178,8 +201,15 @@
   });
   drop.addEventListener("drop", function (e) { if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
   $("sample-btn").addEventListener("click", function () {
+    // Track sample button click for analytics funnel
+    if (window._cf && window._cf.event) { window._cf.event('sample_click'); }
     var s = window.CONED_SAMPLE;
-    render(C.analyze({ months: s.months, ndays: s.ndays }), s.label);
+    lastParsed = { months: s.months, ndays: s.ndays };
+    lastLabel = s.label;
+    render(C.analyze(lastParsed, calcOptions()), s.label);
+  });
+  if (evToggle) evToggle.addEventListener("change", function () {
+    if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
   });
 
   // Show version on load (for bug reports)
