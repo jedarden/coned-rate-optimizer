@@ -131,7 +131,7 @@
       : (a.hasDemand ? '<p class="legend">Demand-based plans bill on your peak kW (not total kWh) — ballpark estimates (supply held flat), best for heat-pump / flat-demand homes.</p>' : '');
     var evNote = a.smartChargeNY.enabled
       ? '<p class="legend">SmartCharge NY what-if: ' + (R.smartChargeNY.offPeakCredit * 100).toFixed(0) + '¢/kWh for midnight–8am charging is applied to all measured off-peak kWh. Con Edison currently says Residential Time-of-Use customers are not eligible, so verify eligibility before relying on this combined estimate.</p>'
-      : '<p class="legend">No separate residential EV rate — EV owners use Time-of-Use plus SmartCharge NY rebates. Turn on the EV option above to see the off-peak incentive scenario.</p>';
+      : '<p class="legend">No separate residential EV rate — residential EVs are priced on the regular plans. Turn on the EV option above to see the SmartCharge NY off-peak incentive scenario.</p>';
 
     // load shape
     var pk = a.peakPct, of = 100 - pk;
