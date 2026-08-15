@@ -6,7 +6,7 @@
 
   var RATES = {
     meta: {
-      version: "1.4.0",
+      version: "1.5.0",
       asOf: "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
       utility: "Con Edison",
       serviceClass: "SC1 (Rate I) — NYC Residential",
@@ -17,13 +17,14 @@
         "Absolute totals are ±~5%: the monthly Market Supply Charge varies, and 2026 months are priced at 2025 rates.",
         "Standard & Time-of-Use assume delivery/MAC/RDM/surcharges are identical; only supply is time-differentiated.",
         "Steady Use & Smart Energy are DEMAND-based (billed on your peak kW, not total kWh). Delivery uses ConEd's published $/kW rates applied to the peak demand derived from your interval data (avg of the 3 highest hourly demands per period); supply + other charges are held at the standard flat rate because ConEd doesn't publish the exact time-of-use supply rates for these plans. Estimates, best for heat-pump / flat-demand homes.",
-        "There is no separate residential EV rate — EV owners use Residential Time-of-Use (priced here) plus SmartCharge NY rebates (a separate program, not modeled).",
+        "SmartCharge NY is an opt-in what-if scenario: it applies the published $0.10/kWh off-peak EV charging incentive to the Time-of-Use estimate. Con Edison currently says Residential Time-of-Use customers are not eligible, so verify program eligibility before relying on the combined estimate.",
         "Estimate only — not affiliated with Con Edison. Verify against your actual bill."
       ],
       sources: [
         "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
         "https://www.coned.com/en/accounts-billing/steady-use-rate",
         "https://www.coned.com/en/accounts-billing/smart-energy-plan",
+        "https://www.coned.com/en/save-money/rebates-incentives-tax-credits/rebates-incentives-tax-credits-for-residential-customers/electric-vehicle-rewards",
         "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf"
       ]
     },
@@ -31,6 +32,7 @@
     summerMonths: [6, 7, 8, 9],
     standard: { name: "Standard Residential", allIn: 0.338267, commodity: 0.137533, delivery: 0.183233, customer: 16.33 },
     tou: { name: "Time-of-Use", nonCommodity: 0.338267 - 0.137533, offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711, gross: 1.10, customer: 21.00 },
+    smartChargeNY: { name: "SmartCharge NY", offPeakCredit: 0.10, offPeakWindow: "midnight–8am" },
     steadyUse: { name: "Steady Use Rate", eligibility: "heat-pump homes", peakStart: 12, peakEnd: 20, demand: { peakSummer: 27.35, peakWinter: 21.04, off: 7.17 }, customer: 16.33 },
     smartEnergy: { name: "Smart Energy Plan", eligibility: "any smart-meter home", peakStart: 12, peakEnd: 20, demand: { peakSummer: 30.68, peakWinter: 23.60, off: 10.06 }, customer: 16.33 }
   };
@@ -39,6 +41,9 @@
   function isSummer(m) { return RATES.summerMonths.indexOf(m) !== -1; }
   function cph(x) { return (x * 100).toFixed(2) + "¢/kWh"; }
   function fmtKwh(k) { return Math.round(k).toLocaleString("en-US") + " kWh"; }
+  function smartChargeEnabled(options) {
+    return options === true || !!(options && (options.smartChargeNY || options.ev || options.evAtHome));
+  }
 
   // Runtime rate override (from rates.json) — deep-merge into RATES, keep derived fields fresh.
   function deepMerge(dst, src) {
@@ -169,15 +174,21 @@
       { label: "Basic service charge", detail: "$" + RATES.standard.customer.toFixed(2) + "/mo", amount: cust }
     ] };
   }
-  function costTOU(months) {
-    var kwh = 0, noncomm = 0, supplyRaw = 0, cust = 0;
-    months.forEach(function (m) { kwh += m.total; noncomm += m.total * RATES.tou.nonCommodity; supplyRaw += m.peak * (m.summer ? RATES.tou.peakSummer : RATES.tou.peakWinter) + m.off * RATES.tou.offPeak; cust += RATES.tou.customer; });
+  function costTOU(months, options) {
+    var kwh = 0, offPeakKwh = 0, noncomm = 0, supplyRaw = 0, cust = 0, smartCharge = smartChargeEnabled(options);
+    months.forEach(function (m) { kwh += m.total; offPeakKwh += m.off; noncomm += m.total * RATES.tou.nonCommodity; supplyRaw += m.peak * (m.summer ? RATES.tou.peakSummer : RATES.tou.peakWinter) + m.off * RATES.tou.offPeak; cust += RATES.tou.customer; });
     var supply = supplyRaw * RATES.tou.gross;
-    return { total: noncomm + supply + cust, lines: [
+    var credit = smartCharge ? offPeakKwh * RATES.smartChargeNY.offPeakCredit : 0;
+    var lines = [
       { label: "Delivery + surcharges", detail: fmtKwh(kwh) + " × " + cph(RATES.tou.nonCommodity), amount: noncomm },
-      { label: "Supply (time-of-use)", detail: "peak " + cph(RATES.tou.peakSummer) + " summer / " + cph(RATES.tou.peakWinter) + " winter · off-peak " + cph(RATES.tou.offPeak), amount: supply },
+      { label: "Supply (time-of-use)", detail: "peak " + cph(RATES.tou.peakSummer) + " summer / " + cph(RATES.tou.peakWinter) + " winter · off-peak " + cph(RATES.tou.offPeak), amount: supply }
+    ];
+    if (smartCharge) lines.push({ label: "SmartCharge NY off-peak credit", detail: fmtKwh(offPeakKwh) + " × −" + cph(RATES.smartChargeNY.offPeakCredit), amount: -credit });
+    lines.push(
       { label: "Basic service charge", detail: "$" + RATES.tou.customer.toFixed(2) + "/mo", amount: cust }
-    ] };
+    );
+    return { total: noncomm + supply + cust - credit, lines: lines,
+      smartChargeNY: { enabled: smartCharge, offPeakKwh: offPeakKwh, credit: credit } };
   }
   function avgTopN(a, n) { if (!a.length) return 0; var s = a.slice().sort(function (x, y) { return y - x; }).slice(0, n); return s.reduce(function (x, y) { return x + y; }, 0) / s.length; }
   function costDemand(hours, plan) {
@@ -193,14 +204,14 @@
     ] };
   }
 
-  function analyze(parsed) {
+  function analyze(parsed, options) {
     var months = parsed.months ? parsed.months : parsed, hours = parsed.hours, ndays = parsed.ndays || 365;
     var totals = months.reduce(function (a, m) { a.total += m.total; a.peak += m.peak; a.off += m.off; return a; }, { total: 0, peak: 0, off: 0 });
     var factor = (ndays >= 350 && ndays <= 385) ? 1 : (ndays > 0 ? 365 / ndays : 1);
-    var stdC = costStandard(months), touC = costTOU(months), std = stdC.total, tou = touC.total;
+    var stdC = costStandard(months), touC = costTOU(months, options), std = stdC.total, tou = touC.total;
     var plans = [
       { key: "standard", name: RATES.standard.name, cost: std, breakdown: stdC.lines, current: true, avail: true },
-      { key: "tou", name: RATES.tou.name, cost: tou, breakdown: touC.lines, avail: true }
+      { key: "tou", name: RATES.tou.name, cost: tou, breakdown: touC.lines, avail: true, smartChargeNY: touC.smartChargeNY }
     ];
     var hasDemand = !!(hours && hours.length);
     if (hasDemand) {
@@ -214,6 +225,7 @@
       ndays: ndays, annualFactor: factor, totalKwh: totals.total, peakKwh: totals.peak, offKwh: totals.off,
       peakPct: totals.total ? totals.peak / totals.total * 100 : 0,
       months: months, hours: hours, plans: plans, cheapest: cheapest, hasDemand: hasDemand,
+      smartChargeNY: touC.smartChargeNY,
       bestDemand: bestDemand, demandOpportunity: bestDemand && bestDemand.cost < std * 0.97,
       standardCost: std, touCost: tou, standardAnnual: std * factor, touAnnual: tou * factor,
       touDelta: tou - std, touDeltaAnnual: (tou - std) * factor, savingsIfSwitch: std - cheapest.cost,
