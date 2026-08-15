@@ -16,6 +16,8 @@
   <meta name="twitter:description" content="Will switching your ConEd rate plan lower your bill? Find out — privately, in your browser." />
   <meta name="twitter:image" content="https://coned.jedarden.com/og.png" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- Cloudflare Web Analytics (cookie-less, privacy-safe) -->
+  <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "PLACEHOLDER_TOKEN"}'></script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -76,6 +78,10 @@
       </div>
       <div class="or">or</div>
       <button id="sample-btn" class="btn">Try it with a sample home →</button>
+      <div class="ev-option">
+        <label for="ev-toggle"><input type="checkbox" id="ev-toggle" /> <strong>I charge an EV at home</strong></label>
+        <p>Include SmartCharge NY’s published <strong>10¢/kWh</strong> incentive for charging midnight–8am in the Time-of-Use estimate. This is a what-if scenario: Con Edison currently says Residential Time-of-Use customers are not eligible for SmartCharge NY, so verify your eligibility before switching.</p>
+      </div>
       <p id="error" class="error" hidden></p>
       <details class="howto">
         <summary>How do I get my ConEd file? (about 60 seconds)</summary>
@@ -111,7 +117,7 @@
         <p id="sources"></p>
         <p class="disclaimer">Estimate only. Not affiliated with Con Edison. Verify against your actual bill before switching.</p>
       </details>
-      <p class="ver">ConEd Rate Optimizer · <span id="version">—</span></p>
+      <p class="ver">ConEd Rate Optimizer · <span id="version">—</span> · <small>Privacy-safe visit analytics via Cloudflare</small></p>
     </footer>
   </main>
 
