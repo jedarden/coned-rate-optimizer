@@ -142,6 +142,7 @@
     results.innerHTML =
       '<div class="verdict ' + vClass + '">' + vHtml + '</div>' +
       '<div class="actions"><button id="share-btn" class="btn-share" type="button">↗ Share this result</button></div>' +
+      (stalenessWarning || '') +
       '<div class="stats">' +
         '<div class="stat"><div class="k">Your usage</div><div class="v">' + Math.round(a.totalKwh * a.annualFactor).toLocaleString() + ' kWh/yr</div></div>' +
         '<div class="stat"><div class="k">Current plan (Standard)</div><div class="v">' + usd(a.standardAnnual) + '/yr</div></div>' +
@@ -214,14 +215,33 @@
 
   // Show version on load (for bug reports)
   var vEl = document.getElementById("version");
+  var stalenessWarning = null; // Cache staleness check result
   function showVer() { if (vEl && C.RATES.meta.version) vEl.textContent = "v" + C.RATES.meta.version; }
+
+  // Check if rates are stale (>6 months since reviewedThrough date)
+  function checkStaleness() {
+    if (!C.RATES.meta.reviewedThrough) return null;
+    var reviewed = new Date(C.RATES.meta.reviewedThrough);
+    var now = new Date();
+    // Ignore time component; compare dates only
+    reviewed.setHours(0, 0, 0, 0);
+    now.setHours(0, 0, 0, 0);
+    // Calculate month difference
+    var months = (now.getFullYear() - reviewed.getFullYear()) * 12 + (now.getMonth() - reviewed.getMonth());
+    if (months > 6) {
+      var reviewedStr = C.RATES.meta.reviewedThrough.substring(0, 7); // YYYY-MM format
+      return '<p class="legend staleness">⚠️ Rates last verified ' + reviewedStr + ' — may be out of date; treat as directional.</p>';
+    }
+    return null;
+  }
+
   showVer();
 
   // Optional runtime rate override — editing rates.json updates rates with no code change.
   if (typeof fetch === "function") {
     fetch("rates.json", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { if (j) { C.applyRates(j); showVer(); } })
+      .then(function (j) { if (j) { C.applyRates(j); showVer(); stalenessWarning = checkStaleness(); } })
       .catch(function () {});
   }
 })();
