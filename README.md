@@ -4,6 +4,11 @@ A single-page, **100% client-side** tool: upload your Con Edison "Download my da
 
 Intended demo home: **coned.jedarden.com** (Cloudflare Pages).
 
+The path from this calculator prototype to a chargeable analysis, including
+pricing, Green Button Connect, Meta acquisition assumptions, accuracy gates, and
+the month-over-month bill experience, is documented in
+[`docs/product-strategy.md`](docs/product-strategy.md).
+
 **Privacy note:** The site uses Cloudflare Web Analytics (cookie-less, privacy-safe) to measure visit traffic and user interaction (sample button clicks, successful parses, parse errors). Your usage data is never uploaded or stored — only anonymous pageview counts and interaction events are collected.
 
 ## What it does
