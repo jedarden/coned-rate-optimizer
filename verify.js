@@ -1,10 +1,11 @@
 /* Node verification: run the calc core against a real ConEd CSV and print results.
    Usage: node verify.js [path-to-green-button.csv]
+   Defaults to test fixture: ./test/fixtures/sample-greenbutton.csv
    Confirms the browser calc reproduces the analysis (expected ~$3,716 / ~$4,335). */
 const fs = require("fs");
 const path = require("path");
 const calc = require("./public/calc.js");
-const csvPath = process.argv[2] || process.env.HOME + "/scratch/coned/electricty.csv";
+const csvPath = process.argv[2] || path.join(__dirname, "test/fixtures/sample-greenbutton.csv");
 
 // Load and apply the same rate data the live browser tool uses (app.js fetches rates.json at runtime)
 const ratesPath = path.join(__dirname, "public/rates.json");
