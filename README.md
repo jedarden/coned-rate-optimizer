@@ -63,3 +63,5 @@ node verify.js ~/path/to/your/green-button-export.csv
 Standard components are ConEd's **published 2025 SC1 NYC average**, grossed up for GRT + sales tax, excluding the fixed customer charge; TOU supply rates are ConEd's **current published residential TOU supply**. Absolute totals are ±~5% (the monthly Market Supply Charge varies; 2026 months are priced at 2025 rates). Assumes delivery/MAC/RDM/surcharges are identical under both plans and folds super-peak into peak. **Estimate only; not affiliated with Con Edison.** Update the constants in `public/calc.js` (`RATES`) when ConEd rates change.
 
 # Push-to-deploy test Thu Aug 27 03:47:04 PM UTC 2026
+
+# Push-to-deploy verification complete Thu Aug 27 03:55:26 PM UTC 2026
