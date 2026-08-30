@@ -2,7 +2,7 @@
 
 A single-page, **100% client-side** tool: upload your Con Edison "Download my data" (Green Button) CSV and see — precisely, for your real usage — whether switching ConEd rate plans would lower your bill. Nothing is uploaded; all computation happens in the browser.
 
-Intended demo home: **coned.jedarden.com** (Cloudflare Pages).
+**Live:** [coned.jedarden.com](https://coned.jedarden.com)
 
 The path from this calculator prototype to a chargeable analysis, including
 pricing, Green Button Connect, Meta acquisition assumptions, accuracy gates, and
@@ -61,15 +61,3 @@ node verify.js ~/path/to/your/green-button-export.csv
 ## Rate model & caveats
 
 Standard components are ConEd's **published 2025 SC1 NYC average**, grossed up for GRT + sales tax, excluding the fixed customer charge; TOU supply rates are ConEd's **current published residential TOU supply**. Absolute totals are ±~5% (the monthly Market Supply Charge varies; 2026 months are priced at 2025 rates). Assumes delivery/MAC/RDM/surcharges are identical under both plans and folds super-peak into peak. **Estimate only; not affiliated with Con Edison.** Update the constants in `public/calc.js` (`RATES`) when ConEd rates change.
-
-# Push-to-deploy test Thu Aug 27 03:47:04 PM UTC 2026
-
-# Push-to-deploy verification complete Thu Aug 27 03:55:26 PM UTC 2026
-
-# Final push-to-deploy test Thu Aug 27 03:56:34 PM UTC 2026
-
-# Push-to-deploy final verification Thu Aug 27 03:57:37 PM UTC 2026
-
-# Push-to-deploy test verification Thu Aug 27 04:14:01 PM UTC 2026
-
-# Push-to-deploy test Thu Aug 27 04:36:33 PM UTC 2026
