@@ -4,3 +4,6 @@
 node_modules/
 .wrangler/
 .DS_Store
+
+# NEEDLE execution traces are local diagnostics.
+**/.beads/traces/
