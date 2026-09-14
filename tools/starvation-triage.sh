@@ -42,9 +42,11 @@
 #   fresh pluck evidence (artifact
 #   age <= 86400s), final_candidate_
 #   count > 0, ready_frontier OK,
-#   open beads exist (excl. alert)   -> FALSE_POSITIVE_PLUCK_LIVE — pluck is
-#                                       finding candidates despite open beads,
-#                                       so the alert's starvation claim is
+#   ready beads exist (excl. alert)  -> FALSE_POSITIVE_PLUCK_LIVE — the
+#                                       frontier is surfacing dispatchable
+#                                       beads other than this alert (which
+#                                       can itself sit in the frontier), so
+#                                       the alert's starvation claim is
 #                                       refuted by present-day evidence; on
 #                                       --apply, close citing the artifact
 #   fresh pluck evidence, final_
@@ -71,6 +73,18 @@
 # ready_frontier scope reads OK; anything else falls through to the
 # ground-truth-only branches above, which never close a workspace that still
 # holds dispatchable work.
+#
+# Provenance caveat: on current bead-rs builds `bead list --ready` runs the
+# pluck-grade frontier computation and REWRITES this artifact. By the time the
+# evidence is read below, it therefore reflects the frontier as of this
+# script's own ground-truth enumeration — pluck-grade and current, but not an
+# independent pluck run. The freshness gate is consequently vestigial on such
+# builds and only bites where the artifact is not regenerated (older builds,
+# override-driven tests). Ready-membership on branch (b) — not the artifact's
+# candidate count alone — is what keeps genuinely invisible work safe: the
+# alert bead itself can be the artifact's only candidate, and open-but-
+# assigned beads are frontier-invisible, so neither may stand as evidence
+# that "the work is being surfaced".
 #
 # Exit codes:
 #   0  triage decision reached
@@ -382,10 +396,13 @@ elif [ "$ALERT_STATUS" = "closed" ]; then
         CLASSIFICATION="CLOSED_NEEDS_REVIEW"
     fi
 elif [ "$PLUCKS_FRESH" -eq 1 ] && [ "$PLUCKS_CANDIDATES" -gt 0 ] && \
-     [ "$READY_FRONTIER_OK" -eq 1 ] && [ "$OPEN_EXCL_ALERT" -gt 0 ]; then
-    # Branch (b): pluck is finding candidates despite open beads existing, and
-    # the frontier is healthy — present-day evidence refutes the alert's
-    # starvation claim, whatever it showed when a pre-fix build filed it.
+     [ "$READY_FRONTIER_OK" -eq 1 ] && [ "$READY_EXCL_ALERT" -gt 0 ]; then
+    # Branch (b): the frontier is surfacing dispatchable beads OTHER than this
+    # alert, and ready_frontier is healthy — present-day evidence refutes the
+    # alert's starvation claim. The gate is ready-membership (excl. alert),
+    # not open-count: open-but-assigned beads are frontier-invisible, and the
+    # alert bead itself can be the artifact's only candidate, so an open-count
+    # gate would close a real starvation on evidence of the alert alone.
     CLASSIFICATION="FALSE_POSITIVE_PLUCK_LIVE"
     ACTION="close"
 elif [ "$PLUCKS_FRESH" -eq 1 ] && [ "$PLUCKS_CANDIDATES" -eq 0 ] && \
