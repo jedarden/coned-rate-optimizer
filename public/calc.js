@@ -180,11 +180,17 @@
     var hours = Object.keys(hourMap).map(function (k) { return hourMap[k]; });
     var months = {};
     hours.forEach(function (h) {
-      var b = months[h.ym]; if (!b) months[h.ym] = b = { ym: h.ym, month: h.mo, total: 0, peak: 0, off: 0, summer: isSummer(h.mo) };
+      var b = months[h.ym]; if (!b) months[h.ym] = b = { ym: h.ym, month: h.mo, total: 0, peak: 0, off: 0, summer: isSummer(h.mo), _d: {} };
       b.total += h.kwh;
+      b._d[h.day] = 1;
       if (h.hour < RATES.peakStartHour) b.off += h.kwh; else b.peak += h.kwh;
     });
-    var marr = Object.keys(months).sort().map(function (k) { return months[k]; });
+    var marr = Object.keys(months).sort().map(function (k) {
+      var b = months[k];
+      b.ndays = Object.keys(b._d).length;   // days actually observed in this bucket
+      delete b._d;
+      return b;
+    });
     return { months: marr, hours: hours, ndays: Object.keys(days).length, intervals: rowN, minDate: minD, maxDate: maxD };
   }
   // ---- CSV (Green Button "Download my data") ----
@@ -212,7 +218,7 @@
       var dt = parseDate(cells[cDate]), kwh = parseFloat(String(cells[cUse]).replace(/[^0-9.\-]/g, "")), hr = toHour(cells[cStart]);
       if (!dt || isNaN(kwh) || hr === null) continue;
       var ym = dt.y + "-" + (dt.mo < 10 ? "0" + dt.mo : dt.mo), hk = dt.y + "-" + dt.mo + "-" + dt.d + "-" + hr;
-      var hm = hourMap[hk]; if (!hm) hourMap[hk] = hm = { ym: ym, mo: dt.mo, hour: hr, weekday: new Date(dt.y, dt.mo - 1, dt.d).getDay(), kwh: 0 };
+      var hm = hourMap[hk]; if (!hm) hourMap[hk] = hm = { ym: ym, mo: dt.mo, day: dt.d, hour: hr, weekday: new Date(dt.y, dt.mo - 1, dt.d).getDay(), kwh: 0 };
       hm.kwh += kwh; days[dt.y + "-" + dt.mo + "-" + dt.d] = 1;
       var t = dt.y * 10000 + dt.mo * 100 + dt.d; if (minD === null || t < minD) minD = t; if (maxD === null || t > maxD) maxD = t; rowN++;
     }
@@ -242,7 +248,7 @@
       var e = etParts(+s[1]), kwh = +v[1] * scale;
       if (isNaN(kwh)) return;
       var ym = e.y + "-" + (e.mo < 10 ? "0" + e.mo : e.mo), hk = e.y + "-" + e.mo + "-" + e.d + "-" + e.hour;
-      var hm = hourMap[hk]; if (!hm) hourMap[hk] = hm = { ym: ym, mo: e.mo, hour: e.hour, weekday: e.weekday, kwh: 0 };
+      var hm = hourMap[hk]; if (!hm) hourMap[hk] = hm = { ym: ym, mo: e.mo, day: e.d, hour: e.hour, weekday: e.weekday, kwh: 0 };
       hm.kwh += kwh; days[e.y + "-" + e.mo + "-" + e.d] = 1;
       var t = e.y * 10000 + e.mo * 100 + e.d; if (minD === null || t < minD) minD = t; if (maxD === null || t > maxD) maxD = t; rowN++;
     });
@@ -438,6 +444,156 @@
     };
   }
 
+  // ---- period dashboard (docs/product-strategy.md, "Month-over-month experience") ----
+  // Answers the doc's four questions over the measured window, one row per period:
+  // what did I pay (actual), why did it change (decomposition), am I still on the best
+  // eligible rate (best), what would the switch have saved (difference). Periods are the
+  // calendar-month buckets the interval data gives — callers must label them as such,
+  // never silently present them as ConEd bill periods.
+
+  // Calendar days in the month a "YYYY-MM" label names.
+  function daysInMonth(ym) {
+    var m = /^(\d{4})-(\d{1,2})$/.exec(String(ym));
+    return m ? new Date(+m[1], +m[2], 0).getDate() : 30;
+  }
+
+  // One record per period from parsed input. Days: days actually observed in the
+  // bucket when interval data says (a truncated export month is a real partial
+  // period), the calendar month otherwise (months-only input can't tell).
+  function periodsFrom(parsed) {
+    var months = parsed.months ? parsed.months : parsed;
+    var hours = parsed.hours || [], byYm = {};
+    hours.forEach(function (h) { (byYm[h.ym] || (byYm[h.ym] = [])).push(h); });
+    return months.map(function (m) {
+      var mo = m.month !== undefined ? m.month : m.mo;
+      return {
+        ym: m.ym, mo: mo, month: mo, summer: m.summer !== undefined ? !!m.summer : isSummer(mo),
+        total: m.total, peak: m.peak, off: m.off,     // costStandard/costTOU read these names
+        kwh: m.total, peakKwh: m.peak, offKwh: m.off, // the dashboard's names for the same numbers
+        days: m.ndays || daysInMonth(m.ym),
+        observedDays: m.ndays || 0,
+        hours: byYm[m.ym] || null
+      };
+    });
+  }
+
+  // Price ONE period on ONE plan — the single-period slice of the same
+  // costStandard/costTOU/costDemand models the verdict uses, so a plan's
+  // periods sum to its window total. Demand plans need that period's hours;
+  // without them they are unpriceable (null).
+  function pricePeriod(p, planKey, options) {
+    options = options || {};
+    if (planKey === "standard") {
+      var c = costStandard([p]);
+      return { plan: "standard", total: c.total, fixed: RATES.standard.customer, variable: c.total - RATES.standard.customer };
+    }
+    if (planKey === "tou") {
+      var t = costTOU([p], options);
+      return { plan: "tou", total: t.total, fixed: RATES.tou.customer, variable: t.total - RATES.tou.customer };
+    }
+    if (planKey === "steady" || planKey === "smart") {
+      if (!p.hours || !p.hours.length) return null;
+      var plan = planKey === "steady" ? RATES.steadyUse : RATES.smartEnergy;
+      var d = costDemand(p.hours, plan);
+      return { plan: planKey, demand: true, total: d.total, fixed: plan.customer, variable: d.total - plan.customer };
+    }
+    return null;
+  }
+
+  // Month-over-month change decomposition between two priced periods of the same
+  // series. An exact split with no residual — the parts always sum to the change:
+  //
+  //   Δtotal = calendar + usage + rate + fixed
+  //
+  //   calendar — more/fewer billed days at the prior period's daily usage and
+  //              effective rate (billing-day span; a partial period lands here)
+  //   usage    — daily-usage change at the prior effective rate
+  //   rate     — effective $/kWh change applied to this period's usage
+  //   fixed    — customer-charge difference (nonzero only across prorated bills)
+  //
+  // a/b: { kwh, days, total, fixed }. Zero usage on either side reads that
+  // side's effective rate as 0 instead of dividing by zero.
+  function decomposeChange(a, b) {
+    var dA = a.days > 0 ? a.days : 1, dB = b.days > 0 ? b.days : 1;
+    var fixed = (b.fixed || 0) - (a.fixed || 0);
+    var varA = (a.total || 0) - (a.fixed || 0), varB = (b.total || 0) - (b.fixed || 0);
+    var rA = a.kwh ? varA / a.kwh : 0, rB = b.kwh ? varB / b.kwh : 0;
+    var calendar = (dB - dA) * (a.kwh / dA) * rA;
+    var usage = dB * (b.kwh / dB - a.kwh / dA) * rA;
+    var rate = (rB - rA) * b.kwh;
+    return { calendar: calendar, usage: usage, rate: rate, fixed: fixed, total: (b.total || 0) - (a.total || 0) };
+  }
+
+  // The published component whose rate moved most between two billing years —
+  // the name behind a nonzero rate effect on reconstructed bills. Null when
+  // both years price from the same published period (e.g. 2026 at 2025 rates).
+  function rateDriver(yearA, yearB) {
+    var pa = billRatePeriod(yearA).rates, pb = billRatePeriod(yearB).rates;
+    if (pa === pb) return null;
+    var best = null;
+    ["delivery", "commodity", "mac", "rdm", "surcharges"].forEach(function (k) {
+      var d = pb[k] - pa[k];
+      if (!best || Math.abs(d) > Math.abs(best.delta)) best = { component: k, delta: d };
+    });
+    return best;
+  }
+
+  // The per-period table itself. actual = what the CURRENT plan charged:
+  // reconstructed component-by-component from the published bill history when
+  // the current plan is Standard (that publication's basis), modeled on the
+  // plan's own rates otherwise. best = the cheapest ELIGIBLE plan for that
+  // period — the per-period answer to "am I still on the best eligible rate".
+  function periodDashboard(months, hours, ctx) {
+    ctx = ctx || {};
+    var cur = ctx.currentPlan || "standard";
+    var eligible = ctx.eligibleKeys && ctx.eligibleKeys.length ? ctx.eligibleKeys : [cur];
+    var rows = [], actualTotal = 0, bestTotal = 0;
+    periodsFrom({ months: months, hours: hours }).forEach(function (p) {
+      var yearM = /^(\d{4})-/.exec(String(p.ym)), year = yearM ? +yearM[1] : null;
+      var actual;
+      if (cur === "standard" && year !== null) {
+        var rec = reconstructBill({ kwh: p.kwh, year: year });
+        actual = { plan: "standard", total: rec.total, fixed: rec.components.customerCharge,
+          variable: rec.total - rec.components.customerCharge, reconstructed: rec };
+      } else {
+        actual = pricePeriod(p, cur, ctx.options);
+      }
+      var best = null;
+      eligible.forEach(function (k) {
+        var c = pricePeriod(p, k, ctx.options);
+        if (c && (!best || c.total < best.total)) best = c;
+      });
+      if (!best) best = actual;
+      var prev = rows.length ? rows[rows.length - 1] : null;
+      var mom = prev && actual ? decomposeChange(
+        { kwh: prev.kwh, days: prev.days, total: prev.actual.total, fixed: prev.actual.fixed },
+        { kwh: p.kwh, days: p.days, total: actual.total, fixed: actual.fixed }) : null;
+      var calendarDays = daysInMonth(p.ym);
+      var row = {
+        ym: p.ym, days: p.days, observedDays: p.observedDays, calendarDays: calendarDays,
+        kwh: p.kwh || 0, peakPct: p.kwh ? p.peakKwh / p.kwh * 100 : 0,
+        partial: !!(p.observedDays && p.observedDays < 0.8 * calendarDays),
+        actual: actual, best: best, bestKey: best ? best.plan : null,
+        difference: actual && best ? actual.total - best.total : null,
+        mom: mom, rateDriver: null,
+        projected: !!(actual && actual.reconstructed && actual.reconstructed.projected),
+        prevDays: prev ? prev.days : null, prevPeakPct: prev ? prev.peakPct : null
+      };
+      if (mom && prev && prev.actual && actual &&
+          prev.actual.reconstructed && actual.reconstructed)
+        row.rateDriver = rateDriver(prev.actual.reconstructed.ratePeriod.year, actual.reconstructed.ratePeriod.year);
+      rows.push(row);
+      if (actual) actualTotal += actual.total;
+      if (best) bestTotal += best.total;
+    });
+    return {
+      currentPlan: cur, rows: rows,
+      actualTotal: actualTotal, bestTotal: bestTotal, difference: actualTotal - bestTotal,
+      partialCount: rows.filter(function (r) { return r.partial; }).length,
+      esco: !!ctx.esco
+    };
+  }
+
   // RATES key for a plan key ("steady" -> steadyUse, "smart" -> smartEnergy).
   function planRates(key) { return RATES[key === "steady" ? "steadyUse" : key === "smart" ? "smartEnergy" : key] || {}; }
   // Copy the plan metadata (exact display name, basis, eligibility, as-of date) onto a priced plan.
@@ -604,6 +760,13 @@
       if (a.avail !== b.avail) return a.avail ? -1 : 1;
       return (a.annualCost - b.annualCost) || ((b.current ? 1 : 0) - (a.current ? 1 : 0));
     });
+    // Per-period actual-vs-best table + month-over-month decomposition (the
+    // product-strategy dashboard) over the same eligibility verdict.
+    var dashboard = periodDashboard(months, hours, {
+      currentPlan: elig.profile.currentPlan,
+      eligibleKeys: comparison.filter(function (e) { return e.avail; }).map(function (e) { return e.key; }),
+      esco: elig.profile.esco === true, options: options
+    });
     var recommendation;
     if (elig.blockers.length) recommendation = "These plans aren't applicable to the account you described — the numbers are reference only. See the warning above your results.";
     else if (!switchTarget) recommendation = "No eligible alternative — " + (currentPlan ? currentPlan.name : "your current plan") + " is the only plan available to you.";
@@ -623,7 +786,8 @@
       // Savings if you leave your current plan for the best eligible alternative — negative
       // means switching can't help. (With the default profile the current plan is Standard.)
       savingsIfSwitch: switchTarget ? curCost - switchTarget.cost : 0,
-      recommendation: recommendation
+      recommendation: recommendation,
+      dashboard: dashboard
     };
   }
 
@@ -653,7 +817,8 @@
   }
 
   var api = { RATES: RATES, parse: parse, parseGreenButton: parseGreenButton, parseESPI: parseESPI, costStandard: costStandard, costTOU: costTOU, costDemand: costDemand, analyze: analyze, checkEligibility: checkEligibility, normalizeProfile: normalizeProfile, unzipCsv: unzipCsv, applyRates: applyRates,
-    BILL_COMPONENTS: BILL_COMPONENTS, billRatePeriod: billRatePeriod, reconstructBill: reconstructBill, reconcileBill: reconcileBill, accuracyGate: accuracyGate, accuracyThresholds: accuracyThresholds };
+    BILL_COMPONENTS: BILL_COMPONENTS, billRatePeriod: billRatePeriod, reconstructBill: reconstructBill, reconcileBill: reconcileBill, accuracyGate: accuracyGate, accuracyThresholds: accuracyThresholds,
+    planRates: planRates, daysInMonth: daysInMonth, periodsFrom: periodsFrom, pricePeriod: pricePeriod, decomposeChange: decomposeChange, rateDriver: rateDriver, periodDashboard: periodDashboard };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ConedCalc = api;
 })(typeof window !== "undefined" ? window : globalThis);

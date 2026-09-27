@@ -908,6 +908,188 @@ try {
   console.log("");
 }
 
+// Test 18: month-over-month dashboard — the per-period actual-vs-best table over
+// analyze(), and the exact calendar/usage/rate/fixed change decomposition behind
+// each row's "why did it change" (docs/product-strategy.md, "Month-over-month
+// experience").
+console.log("Test 18: Month-over-month dashboard & change decomposition");
+try {
+  // Self-sufficient rate state (earlier tests mutate RATES).
+  calc.applyRates(JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8")));
+  const billPeriods = calc.RATES.bill.periods;
+  const rateOf = (y) => billPeriods.find((q) => q.year === y);
+  const varRate = (y) => { const p = rateOf(y); return p.delivery + p.commodity + p.mac + p.rdm + p.surcharges; };
+
+  // ---- decomposeChange: exact, no residual, sensible components ----
+  // Hand case: 300 kWh over 30 days → 372 kWh over 31 days at a flat rate.
+  const fixed = 16.33, rate = 0.30;
+  const A = { kwh: 300, days: 30, total: 300 * rate + fixed, fixed };
+  const B = { kwh: 372, days: 31, total: 372 * rate + fixed, fixed };
+  const mom = calc.decomposeChange(A, B);
+  assertClose(mom.calendar, (31 - 30) * (300 / 30) * rate, 1e-9,
+    "calendar effect = extra billed days × prior daily usage × prior rate");
+  assertClose(mom.usage, 31 * (372 / 31 - 300 / 30) * rate, 1e-9,
+    "usage effect = day-weighted daily-usage change at the prior rate");
+  assertClose(mom.rate, 0, 1e-9, "rate effect is zero when the rate is flat");
+  assertClose(mom.fixed, 0, 1e-9, "fixed effect is zero when the customer charge is unchanged");
+  assertClose(mom.calendar + mom.usage + mom.rate + mom.fixed, B.total - A.total, 1e-9,
+    "components sum exactly to the total change (no residual)");
+  assertClose(mom.total, 21.6, 1e-9, "hand case total change is $21.60");
+
+  // Rate-only change: same usage, same days, the rate moves.
+  const C2 = { kwh: 372, days: 31, total: 372 * 0.32 + fixed, fixed };
+  const momRate = calc.decomposeChange(B, C2);
+  assertClose(momRate.usage + momRate.calendar, 0, 1e-9, "flat usage puts nothing on calendar or usage");
+  assertClose(momRate.rate, 0.02 * 372, 1e-9, "rate effect = Δrate × the later period's usage");
+
+  // Property sweep — includes a zero-usage side (no divide-by-zero), a prorated
+  // customer charge, and missing day counts: the parts always sum to Δtotal.
+  [[300, 30, 372, 31, 16.33, 0.30, 0.30],
+   [100, 28, 0, 31, 16.33, 0.25, 0.25],
+   [0, 31, 50, 28, 0, 0.2, 0.21],
+   [500, 31, 450, 30, 16.33, 0.28, 0.33],
+   [1, 1, 999, 31, 0, 0.15, 0.4]].forEach((t, i) => {
+    const a = { kwh: t[0], days: t[1], total: t[0] * t[5] + t[4], fixed: t[4] };
+    const b = { kwh: t[2], days: t[3], total: t[2] * t[6] + t[4] + (i === 3 ? 8 : 0), fixed: t[4] + (i === 3 ? 8 : 0) };
+    const m = calc.decomposeChange(a, b);
+    assertClose(m.calendar + m.usage + m.rate + m.fixed, b.total - a.total, 1e-9,
+      `sweep #${i + 1}: components sum to Δtotal`);
+  });
+  const noDays = calc.decomposeChange({ kwh: 10, total: 3, fixed: 0 }, { kwh: 10, total: 4, fixed: 0 });
+  assertClose(noDays.rate, 1, 1e-9, "missing day counts fall back to a 1-day span (pure rate change)");
+
+  // ---- rateDriver: names the published component behind a schedule change ----
+  assert(calc.rateDriver(2025, 2026) === null, "2026 prices at the 2025 schedule — no rate driver across that boundary");
+  const compDelta = (k) => rateOf(2025)[k] - rateOf(2024)[k];
+  const biggest = ["delivery", "commodity", "mac", "rdm", "surcharges"]
+    .reduce((x, y) => (Math.abs(compDelta(y)) > Math.abs(compDelta(x)) ? y : x));
+  const drv = calc.rateDriver(2024, 2025);
+  assert(drv.component === biggest && Math.abs(drv.delta - compDelta(biggest)) < 1e-12,
+    `rate driver is the largest component move (${drv.component} ${(drv.delta * 100).toFixed(3)}¢/kWh)`);
+
+  // ---- month buckets carry observed day counts; periodsFrom normalizes ----
+  const csvText = fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.csv"), "utf8");
+  const parsed = calc.parseGreenButton(csvText);
+  assert(parsed.months[0].ndays === 2 && parsed.months[1].ndays === 1,
+    `month buckets count observed days (got ${parsed.months.map((m) => m.ndays).join(", ")})`);
+  const pers = calc.periodsFrom(parsed);
+  assert(pers.length === 2 && pers[0].days === 2 && pers[1].days === 1,
+    "periodsFrom exposes observed days as the period's day count");
+  assert(pers[0].hours && pers[0].hours.length === 48, "periodsFrom buckets each period's hours");
+  const feb = calc.periodsFrom({ months: [{ ym: "2026-02", month: 2, total: 100, peak: 60, off: 40, summer: false }] })[0];
+  assert(feb.days === 28 && feb.observedDays === 0,
+    "months-only input falls back to calendar days (2026-02 → 28) and claims no observed days");
+  assert(calc.daysInMonth("2024-02") === 29 && calc.daysInMonth("2023-02") === 28,
+    "daysInMonth handles leap years");
+
+  // ---- pricePeriod: single-period slices that sum to the window models ----
+  ["standard", "tou"].forEach((k) => {
+    const per = parsed.months.reduce((s, m) => s + calc.pricePeriod(calc.periodsFrom({ months: [m] })[0], k).total, 0);
+    const whole = k === "standard" ? calc.costStandard(parsed.months).total : calc.costTOU(parsed.months).total;
+    assertClose(per, whole, 1e-9, `per-period ${k} slices sum to the whole-window ${k} cost`);
+  });
+  const touSlice = calc.pricePeriod(pers[0], "tou", { smartChargeNY: true });
+  assertClose(touSlice.total, calc.costTOU([parsed.months[0]], { smartChargeNY: true }).total, 1e-9,
+    "options (EV what-if) pass through to the TOU slice");
+  ["steady", "smart"].forEach((k) => {
+    const per = pers.reduce((s, p) => s + calc.pricePeriod(p, k).total, 0);
+    const plan = k === "steady" ? calc.RATES.steadyUse : calc.RATES.smartEnergy;
+    assertClose(per, calc.costDemand(parsed.hours, plan).total, 1e-9,
+      `per-period ${k} slices sum to costDemand over all hours`);
+  });
+  assert(calc.pricePeriod({ kwh: 100, days: 30 }, "steady") === null,
+    "demand plans are unpriceable without that period's hours");
+
+  // ---- the dashboard over a real analysis ----
+  const a = calc.analyze(parsed);
+  const d = a.dashboard;
+  assert(d && Array.isArray(d.rows) && d.rows.length === 2, "analyze() carries a per-period dashboard");
+  const eligKeys = a.comparison.filter((e) => e.avail).map((e) => e.key);
+  d.rows.forEach((r, i) => {
+    assertClose(r.difference, r.actual.total - r.best.total, 1e-9, `${r.ym}: difference = actual − best`);
+    eligKeys.forEach((k) => {
+      const c = calc.pricePeriod(pers[i], k);
+      if (c) assert(r.best.total <= c.total + 1e-9, `${r.ym}: best is the cheapest eligible plan (beats ${k})`);
+    });
+    if (r.mom) assertClose(r.mom.calendar + r.mom.usage + r.mom.rate + r.mom.fixed,
+      r.actual.total - d.rows[i - 1].actual.total, 1e-9, `${r.ym}: MoM parts sum to the actual-charge change`);
+  });
+  assertClose(d.actualTotal, d.rows.reduce((s, r) => s + r.actual.total, 0), 1e-9,
+    "dashboard totals equal the sum of the rows");
+  assert(d.rows[0].mom === null && d.rows[1].mom !== null,
+    "the first period has no month-over-month row; later ones do");
+  assert(d.rows[0].partial === true, "a 2-of-30-day bucket is flagged a partial period");
+  assertClose(d.rows[0].actual.total, calc.reconstructBill({ kwh: parsed.months[0].total, year: 2025 }).total, 1e-9,
+    "a Standard-current home's actual is the reconstructed bill");
+
+  // current plan other than Standard: actual is modeled, not reconstructed
+  const aTou = calc.analyze(parsed, { profile: { currentPlan: "tou" } });
+  const touRow = aTou.dashboard.rows[0];
+  assert(touRow.actual.plan === "tou" && !touRow.actual.reconstructed,
+    "a TOU-current home's actual is modeled on TOU, not Standard-reconstructed");
+  assertClose(touRow.actual.total, calc.costTOU([parsed.months[0]]).total, 1e-9,
+    "the modeled actual matches costTOU's single-period slice");
+
+  // ---- a rate step: months straddling the 2024→2025 schedule ----
+  const stepMonths = [
+    { ym: "2024-11", month: 11, total: 400, peak: 300, off: 100, summer: false },
+    { ym: "2024-12", month: 12, total: 420, peak: 310, off: 110, summer: false },
+    { ym: "2025-01", month: 1, total: 390, peak: 290, off: 100, summer: false }
+  ];
+  const dStep = calc.analyze({ months: stepMonths, ndays: 92 }).dashboard;
+  assert(dStep.rows.length === 3, "three periods in, three rows out");
+  assertClose(dStep.rows[0].actual.total, calc.reconstructBill({ kwh: 400, year: 2024 }).total, 1e-9,
+    "2024 usage prices at the 2024 published schedule");
+  assert(dStep.rows[1].rateDriver === null, "within one schedule there is no named rate driver");
+  const boundary = dStep.rows[2];
+  assert(!!boundary.rateDriver, "crossing the 2024→2025 boundary names a rate driver");
+  assertClose(boundary.mom.rate, (varRate(2025) - varRate(2024)) * 390, 1e-9,
+    "rate effect = Δ published $/kWh × the later period's usage");
+  assert(dStep.rows[2].projected === false, "a 2025 period is not projected");
+
+  // Same usage and day count across the boundary: calendar and usage cancel and
+  // the whole change is the rate effect.
+  const flat = [
+    { ym: "2024-12", month: 12, total: 300, peak: 200, off: 100, summer: false },
+    { ym: "2025-01", month: 1, total: 300, peak: 200, off: 100, summer: false }
+  ];
+  const dFlat = calc.analyze({ months: flat, ndays: 62 }).dashboard;
+  const flatMom = dFlat.rows[1].mom;
+  assertClose(flatMom.calendar, 0, 1e-9, "equal day counts put nothing on the calendar effect");
+  assertClose(flatMom.usage, 0, 1e-9, "equal usage puts nothing on the usage effect");
+  assertClose(flatMom.rate, (varRate(2025) - varRate(2024)) * 300, 1e-9, "the whole change is the rate effect");
+  assertClose(flatMom.total, flatMom.rate, 1e-9, "rate-only change sums to its rate effect");
+
+  // A 2026 month prices at the 2025 schedule and is flagged projected.
+  const dProj = calc.analyze({ months: [
+    { ym: "2025-12", month: 12, total: 300, peak: 200, off: 100, summer: false },
+    { ym: "2026-01", month: 1, total: 310, peak: 205, off: 105, summer: false }
+  ], ndays: 62 }).dashboard;
+  assert(dProj.rows[1].projected === true && dProj.rows[0].projected === false,
+    "2026 months carry the projected-rates flag");
+  assert(dProj.rows[1].rateDriver === null, "2025→2026 shows no rate driver (same published schedule)");
+
+  // ---- the built-in sample (months-only, 13 buckets) end to end ----
+  global.window = {};
+  require("../public/sample.js");
+  const sample = global.window.CONED_SAMPLE;
+  const aS = calc.analyze({ months: sample.months, ndays: sample.ndays });
+  assert(aS.dashboard.rows.length === 13 && aS.dashboard.rows.every((r) => r.actual && r.best),
+    "sample dashboard prices all 13 monthly rows");
+  assert(aS.dashboard.rows.every((r) => r.observedDays === 0 && !r.partial),
+    "months-only rows claim no observed days and no partial flags");
+  assert(aS.dashboard.rows[12].mom !== null && aS.dashboard.rows[0].mom === null,
+    "sample MoM chain starts at the second row");
+  assertClose(aS.dashboard.rows.reduce((s, r) => s + r.actual.total, 0), aS.dashboard.actualTotal, 1e-9,
+    "sample dashboard totals reconcile with its rows");
+
+  console.log("");
+} catch (e) {
+  console.log(`  ✗ Dashboard/decomposition tests failed: ${e.message}`);
+  testsFailed++;
+  console.log("");
+}
+
 // Summary (printed after the async format tests finish)
 function printSummary() {
   console.log("Test Results:");

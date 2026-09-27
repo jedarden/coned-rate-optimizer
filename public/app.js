@@ -8,7 +8,10 @@
 
   var usd = function (n) { return (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
   var usd2 = function (n) { return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
-  var signed = function (n) { return (n >= 0 ? "+" : "−") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
+  var signed = function (n) {
+    var r = Math.round(n);
+    return (r === 0 ? "" : n >= 0 ? "+" : "−") + "$" + Math.abs(r).toLocaleString("en-US");
+  };
 
   function showError(msg) {
     err.textContent = "Couldn't read that file: " + msg;
@@ -76,6 +79,75 @@
         p.eligibilityNotes.map(function (n) { return '<li>' + n + '</li>'; }).join("") + '</ul>' : '') +
       '</div>' +
       '<table class="mtab"><tbody>' + lines + '</tbody></table></div>';
+  }
+
+  // ---- period dashboard (docs/product-strategy.md, "Month-over-month experience") ----
+  // The four questions — what did I pay, why did it change, am I still on the best
+  // eligible rate, what would the switch have saved — over the measured window. The
+  // decomposition math is calc.js's; this is the copy and the table.
+  var COMPONENT_LABELS = { delivery: "delivery", commodity: "supply", mac: "MAC", rdm: "RDM", surcharges: "surcharge" };
+  function planShort(key) {
+    var r = C.planRates(key);
+    return key === "standard" ? "Standard" : (r.short || r.name || key);
+  }
+  function cents(n) { return (n >= 0 ? "+" : "−") + Math.abs(n * 100).toFixed(2) + "¢/kWh"; }
+
+  function momText(r) {
+    var m = r.mom; if (!m) return "";
+    var bits = [];
+    if (r.partial) bits.push("partial period — " + r.observedDays + " of " + r.calendarDays + " days");
+    var rateBit = r.rateDriver
+      ? (COMPONENT_LABELS[r.rateDriver.component] || r.rateDriver.component) + " rate " + cents(r.rateDriver.delta)
+      : null;
+    var dDays = r.days - (r.prevDays === null ? r.days : r.prevDays);
+    [{ v: m.usage, t: "usage " + signed(m.usage) },
+     { v: m.calendar, t: Math.abs(dDays) + (Math.abs(dDays) === 1 ? " day" : " days") + " " + signed(m.calendar) },
+     { v: m.rate, t: rateBit || "rate " + signed(m.rate) }
+    ].sort(function (x, y) { return Math.abs(y.v) - Math.abs(x.v); })
+     .forEach(function (c) { if (Math.round(Math.abs(c.v)) >= 1) bits.push(c.t); });
+    if (r.prevPeakPct !== null && Math.abs(r.peakPct - r.prevPeakPct) >= 5)
+      bits.push("load shifted " + Math.abs(r.peakPct - r.prevPeakPct).toFixed(0) + " pts " +
+        (r.peakPct > r.prevPeakPct ? "toward peak" : "off-peak"));
+    return bits.join(" · ");
+  }
+
+  function periodSection(d) {
+    if (!d || !d.rows || !d.rows.length) return "";
+    var cur = planShort(d.currentPlan);
+    var body = d.rows.map(function (r) {
+      var tags = "";
+      if (r.partial) tags += ' <span class="tag warn">partial · ' + r.observedDays + "/" + r.calendarDays + "d</span>";
+      if (r.projected) tags += ' <span class="tag">projected rates</span>';
+      var cls = function (n) { return n > 0.005 ? "delta-up" : n < -0.005 ? "delta-down" : ""; };
+      var diff = r.difference === null ? "" : '<span class="' + cls(r.difference) + '">' + signed(r.difference) + "</span>";
+      var change = r.mom
+        ? '<span class="' + cls(r.mom.total) + '">' + signed(r.mom.total) + "</span>"
+        : '<span class="tag">first period</span>';
+      var best = r.best ? usd2(r.best.total) + ' <span class="tag">' + planShort(r.bestKey) + "</span>" : "—";
+      return "<tr><td>" + r.ym + tags + "</td>" +
+        '<td class="num">' + Math.round(r.days) + "</td>" +
+        '<td class="num">' + Math.round(r.kwh).toLocaleString("en-US") + "</td>" +
+        '<td class="num">' + (r.actual ? usd2(r.actual.total) : "—") + "</td>" +
+        '<td class="num">' + best + "</td>" +
+        '<td class="num">' + diff + "</td>" +
+        '<td class="num">' + change + "</td>" +
+        "<td>" + momText(r) + "</td></tr>";
+    }).join("");
+    var summary;
+    if (d.difference > 0.5)
+      summary = "Staying on " + cur + " cost <strong>" + usd(d.difference) + " more</strong> than the best eligible plan would have, over these " + d.rows.length + " periods.";
+    else if (d.difference < -0.5)
+      summary = "Your " + cur + " bills came in <strong>" + usd(-d.difference) + " below</strong> the current-rate best-plan pricing — earlier rate schedules were cheaper; the comparison prices alternatives at today's rates.";
+    else
+      summary = "Your current plan (" + cur + ") matched or beat every eligible alternative across these " + d.rows.length + " periods.";
+    return '<h3 class="sec">Period by period — paid vs best eligible plan</h3>' +
+      '<div style="overflow-x:auto"><table id="period-table"><thead><tr><th>Period</th><th class="num">Days</th><th class="num">kWh</th>' +
+      '<th class="num">Actual charge</th><th class="num">Best-plan charge</th><th class="num">Difference</th>' +
+      '<th class="num">Change</th><th>What changed</th></tr></thead><tbody>' + body + "</tbody></table></div>" +
+      '<p class="legend" id="period-summary"><strong>' + summary + "</strong></p>" +
+      '<p class="legend">Actual = what your current plan charged, reconstructed component-by-component from ConEd\'s published bill history when you\'re on Standard, modeled on the plan\'s own rates otherwise. Best plan = the cheapest plan you\'re eligible for that period, at current published rates. These are calendar-month buckets of your interval data — ConEd\'s own billing periods are a different unit and land here only once billing summaries import.</p>' +
+      (d.partialCount ? '<p class="legend">Partial months (a truncated export window) are tagged: the charge is what it was, but most of their month-over-month change is just missing days, and the table says so.</p>' : "") +
+      (d.esco ? '<p class="legend">You buy supply from an ESCO: the supply side of both columns is estimated at ConEd published rates — your ESCO\'s contract price replaces it on the real bill. The delivery-side comparison stands.</p>' : "");
   }
 
   // Privacy-safe share card: rendered in-browser, shared/downloaded by the user. Nothing uploaded.
@@ -204,7 +276,8 @@
         a.plans.map(function (p) { return planMath(p, a.annualFactor); }).join("") +
         '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
-      '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months, a.smartChargeNY.enabled);
+      '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months, a.smartChargeNY.enabled) +
+      periodSection(a.dashboard);
 
     // footer assumptions/sources
     $("assumptions").innerHTML = '<strong>Assumptions:</strong> ' + R.meta.basis + ' ' + R.meta.peakWindow + ' ' + R.meta.caveats.join(" ");
