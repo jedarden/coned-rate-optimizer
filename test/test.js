@@ -369,7 +369,7 @@ async function runFormatTests() {
       `Steady Use carries its former name ("${calc.RATES.steadyUse.formerly}")`);
     assert(calc.RATES.steadyUse.basis === "demand" && calc.RATES.smartEnergy.basis === "demand",
       "Steady Use & Smart Energy are demand-based");
-    assert(calc.RATES.meta.version === "1.8.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
+    assert(calc.RATES.meta.version === "1.9.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
     console.log("");
   } catch (e) {
     console.log(`  ✗ Plan inventory tests failed: ${e.message}`);
@@ -1086,6 +1086,150 @@ try {
   console.log("");
 } catch (e) {
   console.log(`  ✗ Dashboard/decomposition tests failed: ${e.message}`);
+  testsFailed++;
+  console.log("");
+}
+
+// Test 19: billing-feed import, bill replay & confidence gating — actual bills (the
+// Green Button Connect billing feed) are reconstructed at published rates and
+// reconciled against what the customer actually paid; the outcome gates the confidence
+// the verdict may claim (docs/product-strategy.md, "Accuracy gate" + free result).
+console.log("Test 19: Billing-feed import, bill replay & confidence gating");
+try {
+  const DPM = 30.4375; // calc.js's DAYS_PER_MONTH — the customer-charge proration basis
+
+  // -- parseBillingESPI: the sandbox's GBCMD shape (Atom entries, epoch dates, cents) --
+  const sandboxShape = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>urn:usage-summary:301</id>
+    <content>
+      <UsageSummary xmlns="http://naesb.org/espi">
+        <billingPeriod><start>1750353600</start><end>1752945600</end></billingPeriod>
+        <cost><currency>USD</currency><value>11245</value></cost>
+      </UsageSummary>
+    </content>
+  </entry>
+</feed>`;
+  const prefixedShape = sandboxShape.replace(/<(\/?)(entry|id|content|billingPeriod|start|end|cost|currency|value|UsageSummary)(?=[\s>])/g, "<$1espi:$2");
+  const bp = calc.parseBillingESPI(sandboxShape);
+  assert(bp.bills.length === 1 && bp.incomplete.length === 0, "sandbox billing feed parses one summary");
+  assertClose(bp.bills[0].cost, 112.45, 1e-9, "cost converts from ESPI minor units (11245 → $112.45)");
+  assert(bp.bills[0].days === 30 && bp.bills[0].ymdStart === 20250619 && bp.bills[0].ymdEnd === 20250719,
+    `epoch billingPeriod resolves to NY-local calendar dates (${bp.bills[0].ymdStart}–${bp.bills[0].ymdEnd}, ${bp.bills[0].days}d)`);
+  assert(calc.parseBillingESPI(prefixedShape).bills.length === 1, "a namespace-prefixed feed parses identically");
+
+  const isoShape = sandboxShape
+    .replace("<start>1750353600</start>", "<start>2025-03-05</start>")
+    .replace("<end>1752945600</end>", "<end>2025-04-04</end>");
+  const bpIso = calc.parseBillingESPI(isoShape);
+  assert(bpIso.bills[0].days === 30 && bpIso.bills[0].ymdStart === 20250305,
+    "ISO-date billing periods parse to the same shape as epoch ones");
+
+  const noTotal = calc.parseBillingESPI(sandboxShape.replace(/<cost>[\s\S]*?<\/cost>/, ""));
+  assert(noTotal.bills.length === 0 && noTotal.incomplete.length === 1 && noTotal.incomplete[0].reason === "no bill total",
+    `a summary without a total is named incomplete ("${noTotal.incomplete[0].reason}")`);
+  const backwards = calc.parseBillingESPI(isoShape.replace("<start>2025-03-05</start>", "<start>2025-04-04</start>")
+    .replace("<end>2025-04-04</end>", "<end>2025-03-05</end>"));
+  assert(backwards.incomplete[0].reason === "billing period ends before it starts", "an inverted period is rejected");
+  const eur = calc.parseBillingESPI(isoShape.replace("<currency>USD</currency>", "<currency>EUR</currency>"));
+  assert(eur.bills.length === 0 && eur.incomplete.length === 1 && /unsupported currency EUR/.test(eur.incomplete[0].reason),
+    `a non-USD summary can't poison a USD gate ("${eur.incomplete[0].reason}")`);
+  try { calc.parseBillingESPI("<feed><entry><id>x</id><content><title>no summaries here</title></content></entry></feed>"); assert(false, "feed without UsageSummaries should throw"); }
+  catch (err) { assert(err.message.includes("UsageSummary"), `non-billing feed rejected: "${err.message.slice(0, 52)}…"`); }
+
+  // -- normalizeBills: minimal { start, end, cost } objects, unusable ones named --
+  const nb = calc.normalizeBills([
+    { start: "2025-06-01", end: "2025-07-01", cost: 120 },
+    { start: "2025-07-01", end: "2025-08-01" },
+    { start: "2025-08-01", end: "2025-07-01", cost: 5 },
+    "junk"
+  ]);
+  assert(nb.bills.length === 1 && nb.bills[0].days === 30 && nb.bills[0].label === "Jun 1 – Jul 1, 2025",
+    `minimal bill objects normalize with day counts & labels ("${nb.bills[0].label}")`);
+  assert(nb.incomplete.length === 2 && nb.incomplete.some((i) => i.reason === "missing period or total") &&
+    nb.incomplete.some((i) => i.reason === "ends before it starts"), "unusable bills are named, never dropped");
+
+  // -- reconcileBills: interval-supported bills replay against the model; coverage gaps excluded --
+  const hours = [];
+  for (let d = 1; d <= 30; d++) hours.push({ ym: "2025-06", mo: 6, day: d, hour: 12, weekday: new Date(Date.UTC(2025, 5, d)).getUTCDay(), kwh: 10 });
+  const parsedJun = { months: [{ ym: "2025-06", ndays: 30 }], hours };
+  const modeledJun = calc.reconstructBill({ kwh: 300, year: 2025, months: 30 / DPM });
+  const juneBill = { start: "2025-06-01", end: "2025-07-01", cost: modeledJun.total, label: "June bill" };
+
+  const good = calc.reconcileBills(parsedJun, [juneBill]);
+  assert(good.rows.length === 1 && good.rows[0].supported === true, "a bill with interval coverage is checked");
+  assertClose(good.rows[0].kwh, 300, 1e-9, "the bill's kWh come from the interval data (10 × 30 days)");
+  assert(good.rows[0].band === "pass" && good.gate.gate === "pass",
+    `exact reconstruction passes the gate (${(good.rows[0].pctError).toFixed(4)}% error)`);
+
+  const bad10 = calc.reconcileBills(parsedJun, [Object.assign({}, juneBill, { cost: modeledJun.total * 1.10 })]);
+  assert(bad10.rows.length === 1 && bad10.rows[0].band === "fail" && bad10.gate.gate === "fail",
+    `a ${(bad10.rows[0].pctError).toFixed(1)}% miss fails the gate outright`);
+  assert(bad10.gate.failures.length === 1 && bad10.gate.failures[0].label === "June bill", "the miss is named, never averaged away");
+
+  const sepOnly = [{ start: "2025-09-01", end: "2025-10-01", cost: 100, label: "September bill" }];
+  const mixed = calc.reconcileBills(parsedJun, [juneBill, sepOnly[0]]);
+  assert(mixed.rows.length === 1 && mixed.unsupported.length === 1, "bills without interval coverage are excluded, not priced on invented usage");
+  assert(mixed.unsupported[0].reason.includes("0 of 30 days"), `the coverage shortfall is stated ("${mixed.unsupported[0].reason}")`);
+  const none = calc.reconcileBills(parsedJun, sepOnly);
+  assert(none.rows.length === 0 && none.unsupported.length === 1 && none.gate === null, "nothing checkable → no gate (unverified ≠ failed)");
+
+  // -- auditDataQuality: missing months, truncated months, holes in the bill chain --
+  const dq = calc.auditDataQuality(
+    { months: [{ ym: "2025-06", ndays: 30 }, { ym: "2025-08", ndays: 4 }], hours },
+    [juneBill, sepOnly[0]]);
+  assert(dq.missingMonths.join(",") === "2025-07", "a gap between export months is a missing month");
+  assert(dq.partialMonths.join(",") === "2025-08", `a truncated month is flagged partial (4 of 31 days)`);
+  assert(dq.billGaps.length === 1 && dq.billGaps[0].days === 62,
+    `62 days between adjacent bills is a missing bill, named on both sides ("${dq.billGaps[0].after}" → "${dq.billGaps[0].before}")`);
+  assert(dq.incompleteBills.length === 0, "usable bills carry no incomplete entries");
+
+  // -- assessConfidence: the strategy's "calculation confidence and missing-data warnings" --
+  const cleanAudit = { missingMonths: [], billGaps: [], incompleteBills: [] };
+  const high = calc.assessConfidence({ reconciliation: good, audit: cleanAudit, hasHours: true, ndays: 365, profile: { territory: "nyc", currentPlan: "standard" } });
+  assert(high.level === "high" && high.reasons[0].includes("95% accuracy gate"),
+    `a passed gate reads as verified ("${high.reasons[0].slice(0, 64)}…")`);
+
+  const unverified = calc.assessConfidence({ reconciliation: { complete: 0, incomplete: [], rows: [], unsupported: [], gate: null }, audit: cleanAudit, hasHours: true, ndays: 365, profile: {} });
+  assert(unverified.level === "medium" && unverified.reasons[0].includes("no actual bills"), "no bills → medium, with the verify path named");
+
+  const disagreement = calc.assessConfidence({ reconciliation: bad10, audit: cleanAudit, hasHours: true, ndays: 365, profile: {} });
+  assert(disagreement.level === "low" && disagreement.reasons[0].includes("the model missed"),
+    `a failed gate reads as low confidence ("${disagreement.reasons[0].slice(0, 56)}…")`);
+
+  const partialCov = calc.assessConfidence({ reconciliation: good, audit: cleanAudit, hasHours: true, ndays: 365, profile: {} });
+  assert(partialCov.level === "high", "an unsupported bill alongside a passed gate only warns, not downgrades the verified set");
+  const warned = calc.assessConfidence({ reconciliation: mixed, audit: cleanAudit, hasHours: true, ndays: 365, profile: {} });
+  assert(warned.level === "medium" && warned.reasons.some((r) => r.includes("couldn't be checked")),
+    "an uncovered bill downgrades a passed gate and says which");
+
+  const westchester = calc.assessConfidence({ reconciliation: good, audit: cleanAudit, hasHours: true, ndays: 365, profile: { territory: "westchester" } });
+  assert(westchester.level === "medium" && westchester.reasons.some((r) => r.includes("NYC rates")), "Westchester pricing is a named downgrade");
+  const monthly = calc.assessConfidence({ reconciliation: good, audit: cleanAudit, hasHours: false, ndays: 365, profile: {} });
+  assert(monthly.level === "medium" && monthly.reasons.some((r) => r.includes("monthly totals only")), "monthly-only data can't check the load shape — named");
+  const multi = calc.assessConfidence({ reconciliation: good, audit: { missingMonths: ["2025-07"], billGaps: [], incompleteBills: [] }, hasHours: true, ndays: 200, profile: {} });
+  assert(multi.level === "medium" && multi.reasons.some((r) => r.includes("2025-07")) && multi.reasons.some((r) => r.includes("200 days")),
+    "every downgrade is listed, not just the first");
+
+  // -- analyze() end to end: confidence rides on the analysis result --
+  const monthRow = { ym: "2025-06", month: 6, total: 300, peak: 270, off: 30, summer: true };
+  const aNoBills = calc.analyze({ months: [monthRow], hours, ndays: 365 });
+  assert(aNoBills.confidence.level === "medium" && aNoBills.confidence.reasons[0].includes("no actual bills"),
+    "analyze() without billing history states its confidence as unverified");
+  const aBills = calc.analyze({ months: [monthRow], hours, ndays: 365 }, { bills: [juneBill] });
+  assert(aBills.confidence.level === "high", "analyze() with a reconciled bill states verified confidence");
+  assert(aBills.reconciliation.rows.length === 1 && aBills.reconciliation.rows[0].label === "June bill",
+    "analyze() exposes the per-bill reconciliation rows");
+  assert(aBills.dataQuality.missingMonths.length === 0, "analyze() exposes the data-quality audit");
+  const aSkipped = calc.analyze({ months: [monthRow], hours, ndays: 365 },
+    { bills: [juneBill], profile: { currentPlan: "tou" } });
+  assert(aSkipped.confidence.level === "medium" && aSkipped.reconciliation.gate === null && aSkipped.reconciliation.skipped,
+    "non-Standard bills are skipped with the reason surfaced (reconstruction is Standard-basis)");
+
+  console.log("");
+} catch (e) {
+  console.log(`  ✗ Billing-feed/confidence tests failed: ${e.message}`);
   testsFailed++;
   console.log("");
 }

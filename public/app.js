@@ -4,7 +4,7 @@
   var C = window.ConedCalc, R = C.RATES;
   var $ = function (id) { return document.getElementById(id); };
   var drop = $("drop"), file = $("file"), err = $("error"), results = $("results");
-  var evToggle = $("ev-toggle"), lastParsed = null, lastLabel = "";
+  var evToggle = $("ev-toggle"), lastParsed = null, lastLabel = "", lastBills = [], lastBillingNote = null;
 
   var usd = function (n) { return (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
   var usd2 = function (n) { return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
@@ -34,7 +34,7 @@
     };
   }
 
-  function calcOptions() { return { smartChargeNY: !!(evToggle && evToggle.checked), profile: profileOptions() }; }
+  function calcOptions() { return { smartChargeNY: !!(evToggle && evToggle.checked), profile: profileOptions(), bills: lastBills }; }
 
   function monthCost(m, smartCharge) {
     var std = m.total * R.standard.allIn + R.standard.customer;
@@ -145,9 +145,56 @@
       '<th class="num">Actual charge</th><th class="num">Best-plan charge</th><th class="num">Difference</th>' +
       '<th class="num">Change</th><th>What changed</th></tr></thead><tbody>' + body + "</tbody></table></div>" +
       '<p class="legend" id="period-summary"><strong>' + summary + "</strong></p>" +
-      '<p class="legend">Actual = what your current plan charged, reconstructed component-by-component from ConEd\'s published bill history when you\'re on Standard, modeled on the plan\'s own rates otherwise. Best plan = the cheapest plan you\'re eligible for that period, at current published rates. These are calendar-month buckets of your interval data — ConEd\'s own billing periods are a different unit and land here only once billing summaries import.</p>' +
+      '<p class="legend">Actual = what your current plan charged, reconstructed component-by-component from ConEd\'s published bill history when you\'re on Standard, modeled on the plan\'s own rates otherwise. Best plan = the cheapest plan you\'re eligible for that period, at current published rates. These are calendar-month buckets of your interval data — ConEd\'s own billing periods are a different unit, and once a billing history imports they\'re reconciled in their own table below rather than folded in here.</p>' +
       (d.partialCount ? '<p class="legend">Partial months (a truncated export window) are tagged: the charge is what it was, but most of their month-over-month change is just missing days, and the table says so.</p>' : "") +
       (d.esco ? '<p class="legend">You buy supply from an ESCO: the supply side of both columns is estimated at ConEd published rates — your ESCO\'s contract price replaces it on the real bill. The delivery-side comparison stands.</p>' : "");
+  }
+
+  // Confidence, stated BEFORE the verdict (docs/product-strategy.md: the free
+  // result carries "calculation confidence and missing-data warnings"). High
+  // confidence with reconciled bills is stated too — the verification is the
+  // trust signal, not just the warning.
+  function confidenceBlock(a) {
+    var c = a.confidence;
+    if (!c) return "";
+    if (c.level === "high") {
+      var n = a.reconciliation && a.reconciliation.rows ? a.reconciliation.rows.length : 0;
+      return n ? '<p class="legend conf-line">✓ <strong>Verified:</strong> ' + n + " actual bill" + (n === 1 ? "" : "s") +
+        ' reconstructed within the 2% accuracy gate — the numbers below are checked against your real bills.</p>' : "";
+    }
+    return '<p class="opp">⚠ <strong>Confidence: ' + c.level + '.</strong> ' + c.reasons.join(" ") + "</p>";
+  }
+
+  // Your actual bills vs the model — the reconciliation behind the confidence
+  // call. Bill periods stay bill periods: their own table, never silently
+  // mapped onto the calendar-month buckets above.
+  function billsSection(a) {
+    var r = a.reconciliation, dq = a.dataQuality || {};
+    if (!r || (!r.rows.length && !r.unsupported.length && !r.incomplete.length && !(dq.billGaps || []).length && !(dq.missingMonths || []).length)) return "";
+    var body = r.rows.map(function (row) {
+      var cls = row.band === "pass" ? "delta-down" : row.band === "fail" ? "delta-up" : "";
+      return "<tr><td>" + row.label + "</td>" +
+        '<td class="num">' + row.billDays + "</td>" +
+        '<td class="num">' + Math.round(row.kwh).toLocaleString("en-US") + "</td>" +
+        '<td class="num">' + usd2(row.actualTotal) + "</td>" +
+        '<td class="num">' + usd2(row.modeledTotal) + "</td>" +
+        '<td class="num ' + cls + '">' + signed(row.delta) + " (" + (isFinite(row.pctError) ? row.pctError.toFixed(1) : "∞") + "%)</td>" +
+        '<td><span class="tag' + (row.band === "pass" ? "" : " warn") + '">' + row.band + "</span></td></tr>";
+    }).join("");
+    var notes = [];
+    (r.unsupported || []).forEach(function (u) { notes.push("<li><strong>" + u.label + "</strong> — not checked: " + u.reason + ".</li>"); });
+    (r.incomplete || []).forEach(function (u) { notes.push("<li><strong>" + u.label + "</strong> — unusable: " + u.reason + ".</li>"); });
+    (dq.billGaps || []).forEach(function (g) {
+      notes.push("<li>No bill between <strong>" + g.after + "</strong> and <strong>" + g.before + "</strong> (" + g.days + " days) — a bill is missing from the history.</li>");
+    });
+    (dq.missingMonths || []).forEach(function (ym) {
+      notes.push("<li>No usage data for <strong>" + ym + "</strong> — that month is missing from the export.</li>");
+    });
+    return '<h3 class="sec">Your actual bills vs the model</h3>' +
+      (r.rows.length ? '<div style="overflow-x:auto"><table id="bill-table"><thead><tr><th>Bill period</th><th class="num">Days</th><th class="num">kWh</th>' +
+        '<th class="num">Actual</th><th class="num">Modeled</th><th class="num">Δ</th><th>Check</th></tr></thead><tbody>' + body + "</tbody></table></div>" +
+        '<p class="legend">Modeled = the bill\'s own kWh priced component-by-component at ConEd\'s published rates for the bill\'s year — the reconstruction the confidence call is based on. The customer charge is prorated over the bill\'s days.</p>' : "") +
+      (notes.length ? '<ul class="pnotes">' + notes.join("") + "</ul>" : "");
   }
 
   // Privacy-safe share card: rendered in-browser, shared/downloaded by the user. Nothing uploaded.
@@ -259,6 +306,8 @@
       '<p class="legend">Peak = 8am–midnight · Off-peak = midnight–8am. TOU rewards off-peak-heavy usage; it penalizes peak-heavy usage.</p>';
 
     results.innerHTML =
+      confidenceBlock(a) +
+      (lastBillingNote ? '<p class="legend">' + lastBillingNote + "</p>" : "") +
       '<div class="verdict ' + vClass + '">' + vHtml + '</div>' +
       '<div class="actions"><button id="share-btn" class="btn-share" type="button">↗ Share this result</button></div>' +
       (stalenessWarning || '') + blockerNote +
@@ -277,7 +326,7 @@
         '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
       '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months, a.smartChargeNY.enabled) +
-      periodSection(a.dashboard);
+      periodSection(a.dashboard) + billsSection(a);
 
     // footer assumptions/sources
     $("assumptions").innerHTML = '<strong>Assumptions:</strong> ' + R.meta.basis + ' ' + R.meta.peakWindow + ' ' + R.meta.caveats.join(" ");
@@ -290,6 +339,7 @@
   function handleText(text, label) {
     try {
       lastParsed = C.parse(text);
+      lastBills = []; lastBillingNote = null;   // a file import carries no billing feed — drop any connected-account bills
       lastLabel = label;
       render(C.analyze(lastParsed, calcOptions()), label);
     }   // parse() auto-detects CSV vs XML/ESPI
@@ -327,6 +377,7 @@
     if (window._cf && window._cf.event) { window._cf.event('sample_click'); }
     var s = window.CONED_SAMPLE;
     lastParsed = { months: s.months, ndays: s.ndays };
+    lastBills = []; lastBillingNote = null;    // the sample ships without billing summaries
     lastLabel = s.label;
     render(C.analyze(lastParsed, calcOptions()), s.label);
   });
@@ -421,6 +472,14 @@
       var label = "ConEd account · usage point " + res.usagePointId +
         (res.billingEntries ? " · " + res.billingEntries + " billing summar" + (res.billingEntries === 1 ? "y" : "ies") + " retrieved" : "");
       lastParsed = res.parsed;
+      lastBills = res.bills || [];
+      // A billing feed that wouldn't parse (or summaries with no total) degrades to
+      // unverified — say so where the confidence call is shown, never silently.
+      lastBillingNote = res.billingError
+        ? "Your billing history couldn't be read (" + res.billingError + ") — this analysis runs without actual-bill verification."
+        : (res.billingIncomplete
+          ? res.billingIncomplete + " billing summar" + (res.billingIncomplete === 1 ? "y" : "ies") + " had no usable total and won't be checked."
+          : null);
       lastLabel = label;
       render(C.analyze(lastParsed, calcOptions()), label);
     }).catch(function (e) {

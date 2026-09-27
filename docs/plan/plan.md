@@ -281,3 +281,57 @@ together.
   storage (`docs/product-strategy.md`, technical gap #1), this gate becomes the
   ingestion validation for that store rather than going away.
 
+
+## ADR-004: 2026-09-27 — Bill replay gates the verdict's confidence; product claims scoped to the accuracy gate
+
+### Context
+
+The README claimed the tool shows "precisely, for your real usage, whether
+switching ConEd rate plans would lower your bill," while the strategy document
+calls the same prototype "not yet a chargeable rate audit" built on "partly
+simplified and outdated assumptions" (technical gaps #4–#6: bill
+reconstruction, historical backtest, confidence system) and sets a hard
+accuracy gate — ≥95% of complete, supported billing periods within 2% — that
+must pass on ≥20 diverse real accounts before a chargeable product may exist.
+Both statements were true; the README's word "precisely" was the lie in the
+middle.
+
+### Decision
+
+1. **The strategy's accuracy gate is implemented as code, not prose.**
+   `RATES.accuracy` (passPct 2, warnPct 5, gateFraction 0.95) is data,
+   mirrored in `rates.json` and validated by the tariff gate. The pipeline:
+   `parseBillingESPI` (the Green Button Connect UsageSummary feed → bill
+   records) → `reconcileBills` (each bill replayed component-by-component at
+   its own year's published rates, compared with what was actually paid; only
+   bills with ≥80% interval coverage count — "complete, supported") →
+   `accuracyGate` (the 95%-within-2% call, misses listed, never averaged) →
+   `assessConfidence` (high = gate passed; medium = unverified, with each
+   reason named; low = the model disagrees with the bills it could check).
+2. **Confidence rides on the analysis result and renders above the verdict.**
+   A savings number is never shown without its label. Downgrades are
+   per-condition and named (no bills, missing months, bill-chain gaps,
+   unusable summaries, monthly-only data, short window, Westchester pricing,
+   non-Standard basis); they do not compound — "medium" is the floor for every
+   unverified condition, and only a failed gate means "low", because only a
+   failed gate means the model actively disagrees with reality.
+3. **The README claim is narrowed to what the gate supports** ("Verified"
+   means the reconstruction reproduces your bills; counterfactuals keep the
+   estimate caveats) and states plainly that the paid-product bar — 20
+   backtested accounts — is not met, so the site's numbers are a labeled
+   estimate, not an audit.
+
+### Consequences
+
+- **The honest "no bills" case is the loud default.** File-only uploads (the
+  current production path, until ConEd's third-party onboarding lands) show
+  "Confidence: medium — no actual bills imported" instead of an unqualified
+  verdict. That is the point.
+- **Known model gaps surface as data, not silence:** a bill the reconstruction
+  misses renders in the fail band with its worst component named, which is
+  exactly the evidence the Stage-1 calculation audit (strategy doc) needs to
+  decide kill-or-continue.
+- **Follow-up:** the 20-account backtest itself is offline work (recruiting +
+  manual bill comparison per the strategy's experiment plan); nothing in this
+  repo can close it. Until then the gate exists, is tested, and the claims
+  stay scoped beneath it.

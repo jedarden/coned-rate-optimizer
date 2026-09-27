@@ -1,6 +1,6 @@
 # ConEd Rate Optimizer
 
-A single-page, **100% client-side** tool: upload your Con Edison "Download my data" (Green Button) CSV — or connect your account with **Green Button Connect (Share My Data)** — and see, precisely, for your real usage, whether switching ConEd rate plans would lower your bill. All computation happens in the browser; your usage data is never stored anywhere.
+A single-page, **100% client-side** tool: upload your Con Edison "Download my data" (Green Button) CSV — or connect your account with **Green Button Connect (Share My Data)** — and see, for your real usage, whether switching ConEd rate plans would lower your bill. The tool says which kind of number you're looking at: when your billing history is available, your actual bills are replayed through the model first, and the verdict is labeled **Verified** only if they reconcile within the accuracy gate — otherwise it's labeled an **estimate**, with the reasons named. All computation happens in the browser; your usage data is never stored anywhere.
 
 **Live:** [coned.jedarden.com](https://coned.jedarden.com)
 
@@ -18,6 +18,7 @@ the month-over-month bill experience, is documented in
 - Applies **ConEd's published eligibility, enrollment-timing, and lock-in rules** (see [Eligibility & lock-in rules](#eligibility--lock-in-rules)) to your declared situation — service area, current plan, meter, solar, ESCO supply, heat pump — and excludes plans that aren't valid alternatives for you, with the reason shown.
 - Shows the verdict (stay / switch + $), a ranked **plan-by-plan comparison** — each plan with its exact ConEd display name, pricing basis (energy vs demand), eligibility, switch terms, and the date its rates were last verified (demand-based plans are flagged as estimates) — plus your peak/off-peak load shape and a monthly bar chart.
 - Answers the month-over-month questions in a **period-by-period table**: what each period actually cost (reconstructed component-by-component from ConEd's published bill history when you're on Standard, modeled on the plan's own rates otherwise), what the best eligible plan would have charged, the difference, and an exact month-over-month decomposition of every change into **calendar (billed-day) / usage / rate** effects — with the published component behind a rate change named, partial export months and projected-rate periods tagged, and calendar-month buckets labeled as such rather than presented as ConEd bill periods.
+- **Checks itself against your real bills** when a billing history is available (the Green Button Connect billing feed): each bill is replayed through the published-rate model and compared with what you actually paid, the verdict carries a **confidence label** — Verified / Estimate / model-disagrees — *above* the savings number, and every downgrade (no bills, missing months, bill-chain gaps, monthly-only data, Westchester pricing) names itself. See [Verified vs. estimated](#verified-vs-estimated--the-accuracy-gate).
 - Honest by design: for most (peak-heavy) NYC homes it will say **"stay on Standard."**
 
 ## Import formats & Green Button Connect
@@ -59,6 +60,17 @@ visible in the comparison with their reason — they're just never recommended.
 
 **Green Button Connect (account authorization) is implemented — enabled once ConEd's third-party onboarding completes.** The flow (`public/gbc.js` + the `/api/gbc/token` Pages Function) does the full Share My Data authorization: link-out to ConEd's OAuth screen, CSRF-guarded callback, code→token exchange, then direct browser retrieval of interval and billing ESPI feeds, analyzed by the same in-browser engine as the file path. It resolves the tension with the nothing-uploaded promise the narrow way: **all computation stays in the browser**; the one server step (the token exchange, which needs the client secret) retains and logs nothing; the access token lives only in your tab's session storage and dies with it; your ConEd password is never asked for. The full boundary — what each component sees, processes, retains, and logs — is in [`docs/notes/gbc-data-boundary.md`](docs/notes/gbc-data-boundary.md). The connect panel stays hidden until ConEd's [third-party registration](https://www.coned.com/en/accounts-billing/share-energy-usage-data/become-a-third-party) (data security agreement, client credentials, real endpoint URLs) is done; persistent server-side monitoring remains **Phase 2** of the paid product in [`docs/product-strategy.md`](docs/product-strategy.md) and is deliberately not built here, because it would require storing customer data. Until onboarding lands, this site still never connects to your account; it only reads a file you downloaded yourself.
 
+## Verified vs. estimated — the accuracy gate
+
+The strategy document ([`docs/product-strategy.md`](docs/product-strategy.md)) is explicit that this prototype "is not yet a chargeable rate audit": the published-rate model runs on approximations — an annual average supply rate instead of each month's Market Supply Charge, 2026 usage priced at 2025 rates, demand plans estimated on held-flat supply. So the tool never shows an unverified total as exact. It **replays your actual bills through the model** and lets the outcome decide what the verdict is allowed to claim:
+
+- **With a billing history** (the Green Button Connect billing feed), every bill whose dates your interval data covers is reconstructed component-by-component at ConEd's published rates for that bill's year and compared with what you actually paid. A bill within **±2%** passes, within ±5% warns, beyond that fails — each in its own row of the "Your actual bills vs the model" table.
+- **The account-level gate** is the strategy doc's own: at least **95% of complete, supported billing periods** must reconcile within 2% before the verdict says **Verified**. Bills your interval data doesn't cover are excluded from the gate rather than priced on invented usage, and every miss is listed with its label and worst component — never averaged away.
+- **Without a billing history** the verdict is labeled an **estimate**, stated directly above the savings number. Missing usage months, gaps in the bill chain, billing summaries with no total, monthly-only data (no load shape), a short export window, and Westchester pricing each downgrade the label with a named reason — never silently.
+- **What Verified does *not* mean:** it means the published-rate *reconstruction* reproduces your bills. The plan *counterfactuals* still inherit the caveats in [Rate model & caveats](#rate-model--caveats) — alternatives are priced at current published rates, not replayed through your billing history.
+
+**The paid-product bar is not met, and the claims here are scoped to that.** The strategy doc authorizes charging only after ≥20 diverse real accounts have been backtested at this same gate; until that happens, this tool is a labeled estimate, not an audit, and nothing on the site calls a projection a guaranteed saving. The thresholds are data, not constants (`RATES.accuracy` in `public/calc.js`, mirrored in `rates.json`, enforced by the tariff gate `scripts/validate-rates.js`), and the whole path — billing-feed parse → bill replay → gate → confidence label → UI — is covered by the test suite (Tests 14, 15, and 19).
+
 ## Structure
 
 ```
@@ -92,6 +104,7 @@ test/              <- automated test suite and fixtures
   fixtures/
     sample-greenbutton.csv  <- sample data for testing
     sample-greenbutton.xml  <- same data as ESPI XML (epoch/Wh), for parseESPI tests
+    bill-history-sc1-nyc.json <- ConEd's published 3-year SC1 NYC bill history (reconstruction ground truth)
 ```
 
 ## Run locally

@@ -290,11 +290,30 @@
       } catch (e) {
         throw new Error("ConEd returned a feed this tool couldn't read as interval data: " + e.message);
       }
+      // The billing (UsageSummary) feed becomes the actual bill records the
+      // analysis reconciles against (calc.js confidence gating). A billing feed
+      // that won't parse must not sink the interval analysis — it degrades to
+      // no bills, and the failure is surfaced rather than swallowed.
+      var bills = [], billingIncomplete = 0, billingError = null;
+      try {
+        var bp = Calc.parseBillingESPI(res[1].xml);
+        bills = bp.bills;
+        billingIncomplete = bp.incomplete.length;
+      } catch (e) {
+        // Name what came back when the feed has entries but none of them priced —
+        // "empty account" and "unusable feed" need different words from the app.
+        billingError = res[1].entries
+          ? e.message + " (" + res[1].entries + " billing entries came back, none with a usable total)"
+          : e.message;
+      }
       return {
         parsed: parsed,
         intervalXml: res[0],
         billingXml: res[1].xml,
         billingEntries: res[1].entries,
+        bills: bills,
+        billingIncomplete: billingIncomplete,
+        billingError: billingError,
         subscriptionId: live.subscriptionId,
         usagePointId: live.usagePointId
       };

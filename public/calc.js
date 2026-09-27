@@ -6,7 +6,7 @@
 
   var RATES = {
     meta: {
-      version: "1.8.0",
+      version: "1.9.0",
       asOf: "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
       reviewedThrough: "2026-07-01",
       utility: "Con Edison",
@@ -444,6 +444,243 @@
     };
   }
 
+  // ---- billing history import, reconciliation & confidence gating ----
+  // The strategy's customer journey is "import billing + interval history → validate
+  // data quality and reconstruct actual bills", and its free result must carry
+  // "calculation confidence and missing-data warnings" BEFORE the savings claim.
+  // Actual bills arrive as ESPI UsageSummary summaries (the Green Button Connect
+  // billing feed); they are reconstructed component-by-component at the published
+  // rates and reconciled against the modeled charge, and the result gates how much
+  // confidence the verdict is allowed to claim.
+
+  var DAYS_PER_MONTH = 30.4375;   // mean Gregorian month — prorates the customer charge over a bill's days
+  var BILL_GAP_DAYS = 45;         // adjacent bill periods farther apart than this have a missing bill between them
+  var BILL_COVERAGE = 0.8;        // interval data must cover this share of a bill's days to price it
+  var MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function ymdInt(y, mo, d) { return y * 10000 + mo * 100 + d; }
+  // Calendar-day serial number for a NY-local calendar date (DST-proof day counts).
+  function daySerial(y, mo, d) { return Math.round(Date.UTC(y, mo - 1, d) / 86400000); }
+  function billLabel(a, b) {
+    function part(p, withYear) { return MONTH_NAMES[p.mo - 1] + " " + p.d + (withYear ? ", " + p.y : ""); }
+    return a.y === b.y ? part(a, false) + " – " + part(b, true) : part(a, true) + " – " + part(b, true);
+  }
+
+  // One billing period from an ESPI UsageSummary entry. Dates may be epoch seconds
+  // (the GBCMD shape) or an xsd:dateTime / date string; both resolve to the
+  // NY-local calendar date the bill boundary names.
+  function billDate(s) {
+    s = String(s).trim();
+    if (/^\d+$/.test(s)) {
+      if (!_ET) return null;                       // epoch needs the NY conversion
+      var p = etParts(+s);
+      return { parts: p, epoch: +s };
+    }
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+    if (!m) return null;
+    var parts = { y: +m[1], mo: +m[2], d: +m[3] };
+    var epoch = Date.parse(s) / 1000;              // NaN for a bare date — only used for ordering/gaps
+    return { parts: parts, epoch: isNaN(epoch) ? daySerial(parts.y, parts.mo, parts.d) * 86400 : epoch };
+  }
+
+  // ESPI billing (UsageSummary) feed -> { bills, incomplete }. Cost is the
+  // <cost> amount in minor currency units (cents for USD), as ESPI publishes it.
+  // Entries that can't be priced are returned in `incomplete` with the reason —
+  // never silently dropped and never allowed to poison the reconciled set.
+  function parseBillingESPI(xml) {
+    xml = String(xml);
+    var entries = xml.match(new RegExp("<" + _P + "entry>[\\s\\S]*?</" + _P + "entry>", "g")) || [];
+    var bills = [], incomplete = [];
+    entries.forEach(function (e) {
+      var us = new RegExp("<" + _P + "UsageSummary[\\s\\S]*?</" + _P + "UsageSummary>").exec(e);
+      if (!us) return;                             // not a billing summary entry
+      var idM = new RegExp("<" + _P + "id>\\s*([^<]+?)\\s*<\\/(?:[A-Za-z_][\\w.-]*:)?id>").exec(e);
+      function reject(reason) { incomplete.push({ label: idM ? idM[1] : "billing summary", reason: reason }); }
+      var sM = new RegExp("<" + _P + "start>\\s*([^<]+?)\\s*<\\/").exec(us[0]),
+          eM = new RegExp("<" + _P + "end>\\s*([^<]+?)\\s*<\\/").exec(us[0]);
+      if (!sM || !eM) return reject("no billing period");
+      var S = billDate(sM[1]), E = billDate(eM[1]);
+      if (!S || !E) return reject("unreadable billing period dates");
+      var days = daySerial(E.parts.y, E.parts.mo, E.parts.d) - daySerial(S.parts.y, S.parts.mo, S.parts.d);
+      if (days <= 0) return reject("billing period ends before it starts");
+      var vM = new RegExp("<" + _P + "cost>[\\s\\S]*?<" + _P + "value>\\s*(-?[\\d.]+)\\s*<\\/" + _P + "value>[\\s\\S]*?<\\/" + _P + "cost>").exec(us[0])
+            || new RegExp("<" + _P + "cost[^>]*\\bvalue=\"(-?[\\d.]+)\"[^>]*>").exec(us[0]);
+      if (!vM) return reject("no bill total");
+      var curM = new RegExp("<" + _P + "currency>\\s*([^<]+?)\\s*<\\/").exec(us[0])
+            || new RegExp("<" + _P + "cost[^>]*\\bcurrency=\"([A-Za-z]{3})\"").exec(us[0]);
+      var cur = curM ? curM[1].toUpperCase() : "USD";
+      if (cur !== "USD") return reject("unsupported currency " + cur + " — the model prices US dollars");
+      bills.push({
+        start: S.epoch, end: E.epoch, days: days,
+        ymdStart: ymdInt(S.parts.y, S.parts.mo, S.parts.d),
+        ymdEnd: ymdInt(E.parts.y, E.parts.mo, E.parts.d),
+        cost: +vM[1] / 100, currency: cur,
+        label: billLabel(S.parts, E.parts)
+      });
+    });
+    if (!bills.length && !incomplete.length) throw new Error("no billing summaries (UsageSummary entries) in this feed — is this the billing export?");
+    bills.sort(function (a, b) { return a.start - b.start; });
+    return { bills: bills, incomplete: incomplete };
+  }
+
+  // Accept already-parsed bill records as-is and minimal { start, end, cost }
+  // objects (epochs or date strings) — one shape for every caller.
+  function normalizeBills(bills) {
+    var out = [], incomplete = [];
+    (Array.isArray(bills) ? bills : []).forEach(function (b) {
+      if (!b || typeof b !== "object") return;
+      if (b.ymdStart && b.ymdEnd && typeof b.cost === "number") { out.push(b); return; }
+      var S = b.start !== undefined ? billDate(b.start) : null, E = b.end !== undefined ? billDate(b.end) : null;
+      if (!S || !E || typeof b.cost !== "number" || isNaN(b.cost)) {
+        incomplete.push({ label: b.label || "bill", reason: "missing period or total" });
+        return;
+      }
+      var days = daySerial(E.parts.y, E.parts.mo, E.parts.d) - daySerial(S.parts.y, S.parts.mo, S.parts.d);
+      if (days <= 0) { incomplete.push({ label: b.label || "bill", reason: "ends before it starts" }); return; }
+      out.push({
+        start: S.epoch, end: E.epoch, days: days, cost: b.cost,
+        ymdStart: ymdInt(S.parts.y, S.parts.mo, S.parts.d),
+        ymdEnd: ymdInt(E.parts.y, E.parts.mo, E.parts.d),
+        label: b.label || billLabel(S.parts, E.parts), currency: b.currency || "USD"
+      });
+    });
+    out.sort(function (a, b) { return a.start - b.start; });
+    return { bills: out, incomplete: incomplete };
+  }
+
+  // Reconcile actual bills against the interval data and the published-rate
+  // reconstruction. A bill is *supported* only when the interval data covers at
+  // least BILL_COVERAGE of its days — "complete, supported billing periods" in
+  // the strategy's accuracy gate — and unsupported ones are excluded from the
+  // gate rather than priced on invented usage. gate is null when nothing was
+  // checkable: "unverified", not "failed".
+  function reconcileBills(parsed, bills, options) {
+    options = options || {};
+    var norm = Array.isArray(bills) && bills.length && bills[0] && bills[0].ymdStart ? { bills: bills, incomplete: [] } : normalizeBills(bills);
+    var hours = (parsed && parsed.hours) || [];
+    var rows = [], unsupported = [];
+    norm.bills.forEach(function (b) {
+      var kwh = 0, seen = {};
+      hours.forEach(function (h) {
+        var t = ymdInt(+String(h.ym).slice(0, 4), h.mo, h.day);
+        if (t >= b.ymdStart && t < b.ymdEnd) { kwh += h.kwh; seen[t] = 1; }
+      });
+      var observedDays = Object.keys(seen).length;
+      if (observedDays < BILL_COVERAGE * b.days) {
+        unsupported.push({ label: b.label, reason: "interval data covers " + observedDays + " of " + b.days + " days" });
+        return;
+      }
+      var endY = Math.floor(b.ymdEnd / 10000);
+      var r = reconcileBill({ kwh: kwh, year: endY, months: b.days / DAYS_PER_MONTH, total: b.cost, label: b.label }, options);
+      r.kwh = kwh; r.observedDays = observedDays; r.billDays = b.days; r.supported = true;
+      rows.push(r);
+    });
+    return {
+      complete: norm.bills.length, incomplete: norm.incomplete, rows: rows, unsupported: unsupported,
+      gate: rows.length ? accuracyGate(rows, { thresholds: options.thresholds }) : null
+    };
+  }
+
+  // Missing and incomplete periods across both inputs: interval months absent
+  // from the middle of the export window, truncated export months, holes between
+  // adjacent billing periods, and billing summaries that carry no usable total.
+  function auditDataQuality(parsed, bills) {
+    var months = (parsed && parsed.months ? parsed.months : parsed) || [];
+    var partialMonths = [], missingMonths = [];
+    (Array.isArray(months) ? months : []).forEach(function (m) {
+      if (m.ndays && m.ndays < 0.8 * daysInMonth(m.ym)) partialMonths.push(m.ym);
+    });
+    if (Array.isArray(months) && months.length) {
+      var present = {};
+      months.forEach(function (m) { present[m.ym] = 1; });
+      var y = +String(months[0].ym).slice(0, 4), mo = +String(months[0].ym).slice(5, 7);
+      var last = months[months.length - 1].ym;
+      for (;;) {
+        var ym = y + "-" + (mo < 10 ? "0" : "") + mo;
+        if (ym > last) break;
+        if (!present[ym]) missingMonths.push(ym);
+        mo++; if (mo > 12) { mo = 1; y++; }
+      }
+    }
+    var norm = normalizeBills(bills || []);
+    var billGaps = [];
+    for (var i = 1; i < norm.bills.length; i++) {
+      var gap = Math.round((norm.bills[i].start - norm.bills[i - 1].end) / 86400);
+      if (gap > BILL_GAP_DAYS) billGaps.push({ after: norm.bills[i - 1].label, before: norm.bills[i].label, days: gap });
+    }
+    return { partialMonths: partialMonths, missingMonths: missingMonths, billGaps: billGaps, incompleteBills: norm.incomplete };
+  }
+
+  // The confidence the verdict may claim, with the reasons stated alongside —
+  // the strategy's "calculation confidence and missing-data warnings" before
+  // any savings figure. high = verified against actual bills; medium =
+  // unverified or partially checkable; low = the model disagrees with the
+  // bills it could check. Every downgrade is named, never averaged away.
+  function assessConfidence(ctx) {
+    ctx = ctx || {};
+    var recon = ctx.reconciliation || {}, audit = ctx.audit || {}, profile = ctx.profile || {};
+    var level = "high", reasons = [];
+    // Independent unverified-conditions each name themselves; they don't compound —
+    // "medium" is the floor for everything except a failed gate, which is the one
+    // signal that means the model actively disagrees with the customer's bills.
+    function drop() { if (level === "high") level = "medium"; }
+
+    if (!recon.complete && !(recon.incomplete && recon.incomplete.length)) {
+      drop();
+      reasons.push("no actual bills imported — these are modeled from ConEd's published rates, not yet verified against your real bills (connect your account to verify them).");
+    } else if (recon.gate === null) {
+      drop();
+      reasons.push("billing history imported but nothing could be checked against your interval data" +
+        (recon.skipped ? " (" + recon.skipped + ")" : "") + ".");
+    } else if (recon.gate.gate === "pass") {
+      reasons.push(recon.gate.within2 + " of " + recon.gate.periods + " actual bills reconstructed within the " +
+        recon.gate.gateFraction * 100 + "% accuracy gate (worst ±" + recon.gate.maxPctError.toFixed(1) + "%).");
+      if (recon.unsupported.length) {
+        drop();
+        reasons.push(recon.unsupported.length + " bill" + (recon.unsupported.length === 1 ? "" : "s") +
+          " couldn't be checked — no interval coverage for those dates.");
+      }
+    } else {
+      level = "low";
+      var worst = recon.gate.failures.reduce(function (a, b) { return !a || b.pctError > a.pctError ? b : a; }, null);
+      reasons.push("the model missed " + recon.gate.failures.length + " of " + recon.gate.periods +
+        " actual bills" + (worst ? " — worst " + worst.label + " (±" + worst.pctError.toFixed(1) + "%)" : "") +
+        " — treat the savings figures as unverified.");
+    }
+
+    if (audit.missingMonths && audit.missingMonths.length) {
+      drop();
+      reasons.push("no usage data for " + audit.missingMonths.join(", ") + " — those periods are missing from the export.");
+    }
+    if (audit.billGaps && audit.billGaps.length) {
+      drop();
+      reasons.push(audit.billGaps.length + " gap" + (audit.billGaps.length === 1 ? "" : "s") + " in the billing history (a missing bill between " +
+        audit.billGaps[0].after + " and " + audit.billGaps[0].before + ").");
+    }
+    if (audit.incompleteBills && audit.incompleteBills.length) {
+      drop();
+      reasons.push(audit.incompleteBills.length + " billing summar" + (audit.incompleteBills.length === 1 ? "y" : "ies") +
+        " had no usable total and couldn't be checked.");
+    }
+    if (ctx.hasHours === false) {
+      drop();
+      reasons.push("monthly totals only — the hourly load shape (and the demand plans) can't be checked.");
+    }
+    if (ctx.ndays && ctx.ndays < 350) {
+      drop();
+      reasons.push(ctx.ndays + " days of usage annualized — a full year would firm this up.");
+    }
+    if (profile.territory === "westchester") {
+      drop();
+      reasons.push("reconstruction uses ConEd's published NYC rates — Westchester delivery differs.");
+    }
+    if (recon.complete && profile.currentPlan && profile.currentPlan !== "standard") {
+      drop();
+      reasons.push("actual-bill reconstruction is Standard-rate only; your plan's bills are modeled, not verified.");
+    }
+    return { level: level, reasons: reasons };
+  }
+
   // ---- period dashboard (docs/product-strategy.md, "Month-over-month experience") ----
   // Answers the doc's four questions over the measured window, one row per period:
   // what did I pay (actual), why did it change (decomposition), am I still on the best
@@ -767,6 +1004,28 @@
       eligibleKeys: comparison.filter(function (e) { return e.avail; }).map(function (e) { return e.key; }),
       esco: elig.profile.esco === true, options: options
     });
+    // Actual billing history (options.bills — bill records parsed from the Green
+    // Button Connect billing feed): reconcile each supported bill against the
+    // published-rate reconstruction, audit both inputs for missing or incomplete
+    // periods, and derive the confidence the verdict may claim before its
+    // savings figure.
+    var billsIn = (options && options.bills) || [];
+    var reconciliation;
+    if (elig.profile.currentPlan === "standard") {
+      reconciliation = reconcileBills(parsed, billsIn, {});
+    } else {
+      var normBills = normalizeBills(billsIn);
+      reconciliation = {
+        complete: normBills.bills.length, incomplete: normBills.incomplete,
+        rows: [], unsupported: [], gate: null,
+        skipped: "actual-bill reconstruction prices the Standard rate"
+      };
+    }
+    var audit = auditDataQuality(parsed, billsIn);
+    var confidence = assessConfidence({
+      reconciliation: reconciliation, audit: audit,
+      hasHours: hasDemand, ndays: ndays, profile: elig.profile
+    });
     var recommendation;
     if (elig.blockers.length) recommendation = "These plans aren't applicable to the account you described — the numbers are reference only. See the warning above your results.";
     else if (!switchTarget) recommendation = "No eligible alternative — " + (currentPlan ? currentPlan.name : "your current plan") + " is the only plan available to you.";
@@ -787,7 +1046,10 @@
       // means switching can't help. (With the default profile the current plan is Standard.)
       savingsIfSwitch: switchTarget ? curCost - switchTarget.cost : 0,
       recommendation: recommendation,
-      dashboard: dashboard
+      dashboard: dashboard,
+      reconciliation: reconciliation,
+      dataQuality: audit,
+      confidence: confidence
     };
   }
 
@@ -818,6 +1080,7 @@
 
   var api = { RATES: RATES, parse: parse, parseGreenButton: parseGreenButton, parseESPI: parseESPI, costStandard: costStandard, costTOU: costTOU, costDemand: costDemand, analyze: analyze, checkEligibility: checkEligibility, normalizeProfile: normalizeProfile, unzipCsv: unzipCsv, applyRates: applyRates,
     BILL_COMPONENTS: BILL_COMPONENTS, billRatePeriod: billRatePeriod, reconstructBill: reconstructBill, reconcileBill: reconcileBill, accuracyGate: accuracyGate, accuracyThresholds: accuracyThresholds,
+    parseBillingESPI: parseBillingESPI, normalizeBills: normalizeBills, reconcileBills: reconcileBills, auditDataQuality: auditDataQuality, assessConfidence: assessConfidence,
     planRates: planRates, daysInMonth: daysInMonth, periodsFrom: periodsFrom, pricePeriod: pricePeriod, decomposeChange: decomposeChange, rateDriver: rateDriver, periodDashboard: periodDashboard };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ConedCalc = api;

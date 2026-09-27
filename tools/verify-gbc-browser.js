@@ -9,10 +9,13 @@
    plus a static server for public/ whose /api/gbc/token route delegates to
    the REAL Pages Function. Then drives a real Chromium through:
 
-     1. the shipped unconfigured state  → connect panel hidden, page unchanged
+     1. the shipped unconfigured state  → connect panel hidden, page unchanged;
+        the sample verdict carries the unverified-confidence label (no bills)
      2. click Connect → mock authorize → redirect back → code exchanged
-     3. interval + billing feeds pulled → verdict rendered ("ConEd account" label)
-     4. access token present in this tab's sessionStorage
+     3. interval + billing feeds pulled → verdict rendered ("ConEd account" label),
+        the confidence call reflects the imported billing history, and the
+        bill-replay section names what couldn't be checked
+     4. a file import after connecting resets the billing history (no stale bills)
      5. Disconnect clears the token and resets the panel
 
    Not part of scripts/definition-of-done.sh (needs a browser); the Node-only
@@ -132,6 +135,14 @@ const ok = (cond, msg) => {
     ok(await page.isVisible("#gbc-panel") === false, "connect panel is hidden when gbc-config.json is unconfigured");
     ok(await page.isVisible("#drop"), "the file drop zone is unaffected");
 
+    console.log("\n1b. Sample verdict carries its confidence label");
+    await page.click("#sample-btn");
+    await page.waitForSelector("#results", { state: "visible" });
+    const sampleBody = await page.textContent("body");
+    ok(/Confidence: medium/.test(sampleBody) && /no actual bills imported/.test(sampleBody),
+      "no billing history → the estimate label renders above the verdict");
+    ok(await page.$("#bill-table") === null, "no bill-replay table without a billing history");
+
     console.log("\n2. Configured: connect + authorize");
     box.staticMode = "configured";
     await page.reload({ waitUntil: "load" });
@@ -145,12 +156,22 @@ const ok = (cond, msg) => {
     const body = await page.textContent("body");
     ok(/ConEd account · usage point 9/.test(body), "result is labelled as the connected-account import");
     ok(/billing summar/.test(body), "billing feed retrieval is surfaced");
+    ok(/Confidence: medium/.test(body) && /nothing could be checked/.test(body),
+      "imported bills the interval data can't cover → the confidence call says so, not 'verified'");
+    ok(/not checked:/.test(body) && /interval data covers 0 of 30 days/.test(body),
+      "the uncovered bill is named in the bill-replay section, never priced on invented usage");
     ok(await page.isVisible("#gbc-refresh") && await page.isVisible("#gbc-disconnect"), "connected controls (re-pull, disconnect) shown");
     const conn = await page.evaluate(() => JSON.parse(sessionStorage.getItem("gbc-connection") || "null"));
     ok(!!conn && conn.accessToken === box.accessToken, "access token lives in this tab's sessionStorage (and nowhere else)");
     ok(pageErrors.length === 0, "no page errors" + (pageErrors.length ? ` — ${pageErrors.join(" | ")}` : ""));
 
-    console.log("\n4. Disconnect");
+    console.log("\n4. File import resets the connected billing history");
+    await page.setInputFiles("#file", path.join(PUBLIC_DIR, "..", "test", "fixtures", "sample-greenbutton.csv"));
+    await page.waitForFunction(() => /no actual bills imported/.test(document.body.textContent));
+    ok(true, "a file upload analyzes without the connected account's bills (stale state dropped)");
+    ok(!/not checked:/.test(await page.textContent("body")), "the bill-replay notes are gone with them");
+
+    console.log("\n5. Disconnect");
     await page.click("#gbc-disconnect");
     await page.waitForFunction(() => sessionStorage.getItem("gbc-connection") === null);
     ok(true, "disconnect removes the token from sessionStorage");
