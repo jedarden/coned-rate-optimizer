@@ -1,12 +1,63 @@
 {
-  "_comment": "ConEd SC1 residential rates. Edit + redeploy to update the tool with no code change. app.js fetches this and overrides the defaults baked into calc.js. Cents are expressed as $/kWh; demand rates are $/kW.",
+  "_comment": "ConEd SC1 residential rates. Edit + redeploy to update the tool with no code change. app.js fetches this and overrides the defaults baked into calc.js. Cents are expressed as $/kWh; demand rates are $/kW. Each plan also carries display metadata (name, basis, eligibility, ratesAsOf, source) that the plan-by-plan comparison surfaces.",
   "meta": {
     "asOf": "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
     "reviewedThrough": "2026-07-01"
   },
-  "standard": { "allIn": 0.338267, "commodity": 0.137533, "delivery": 0.183233, "customer": 16.33 },
-  "tou": { "offPeak": 0.0522, "peakSummer": 0.2786, "peakWinter": 0.1711, "gross": 1.10, "customer": 21.00 },
-  "smartChargeNY": { "offPeakCredit": 0.10, "offPeakWindow": "midnight–8am" },
-  "steadyUse": { "demand": { "peakSummer": 27.35, "peakWinter": 21.04, "off": 7.17 }, "customer": 16.33 },
-  "smartEnergy": { "demand": { "peakSummer": 30.68, "peakWinter": 23.60, "off": 10.06 }, "customer": 16.33 }
+  "standard": {
+    "name": "Standard Residential",
+    "short": "Standard",
+    "basis": "energy",
+    "eligibility": "every SC1 residential customer (the default rate)",
+    "ratesAsOf": "2025 published SC1 NYC averages (2026 usage priced at 2025 rates)",
+    "source": "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
+    "allIn": 0.338267,
+    "commodity": 0.137533,
+    "delivery": 0.183233,
+    "customer": 16.33
+  },
+  "tou": {
+    "name": "Time-of-Use",
+    "short": "TOU",
+    "basis": "energy",
+    "eligibility": "SC1 residential customers who opt in",
+    "ratesAsOf": "residential TOU supply rates current as of 2026-07",
+    "source": "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
+    "offPeak": 0.0522,
+    "peakSummer": 0.2786,
+    "peakWinter": 0.1711,
+    "gross": 1.10,
+    "customer": 21.00
+  },
+  "smartChargeNY": {
+    "name": "SmartCharge NY",
+    "eligibility": "what-if only — Con Edison currently says Residential Time-of-Use customers are not eligible",
+    "ratesAsOf": "incentive as published, verified 2026-07",
+    "source": "https://www.coned.com/en/save-money/rebates-incentives-tax-credits/rebates-incentives-tax-credits-for-residential-customers/electric-vehicle-rewards",
+    "offPeakCredit": 0.10,
+    "offPeakWindow": "midnight–8am"
+  },
+  "steadyUse": {
+    "name": "Steady Use Rate",
+    "short": "Steady Use",
+    "formerly": "Select Pricing Plan",
+    "basis": "demand",
+    "eligibility": "designed for steady, heat-pump-style loads",
+    "ratesAsOf": "delivery $/kW rates current as of 2026-07",
+    "source": "https://www.coned.com/en/accounts-billing/steady-use-rate",
+    "peakWindow": "weekdays noon–8pm",
+    "demand": { "peakSummer": 27.35, "peakWinter": 21.04, "off": 7.17 },
+    "customer": 16.33
+  },
+  "smartEnergy": {
+    "name": "Smart Energy Plan",
+    "short": "Smart Energy",
+    "basis": "demand",
+    "eligibility": "any smart-meter home",
+    "ratesAsOf": "delivery $/kW rates current as of 2026-07",
+    "source": "https://www.coned.com/en/accounts-billing/smart-energy-plan",
+    "peakWindow": "weekdays noon–8pm",
+    "demand": { "peakSummer": 30.68, "peakWinter": 23.60, "off": 10.06 },
+    "customer": 16.33
+  }
 }

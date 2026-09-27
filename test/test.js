@@ -335,6 +335,88 @@ async function runFormatTests() {
     testsFailed++;
     console.log("");
   }
+
+  // Test 10: complete plan inventory with metadata (exact display names, basis,
+  // eligibility, rates-as-of dates) — in calc.js defaults AND mirrored in rates.json.
+  console.log("Test 10: Plan inventory & metadata");
+  try {
+    const PLAN_KEYS = ["standard", "tou", "steadyUse", "smartEnergy"];
+    const EXACT_NAMES = {
+      standard: "Standard Residential",
+      tou: "Time-of-Use",
+      steadyUse: "Steady Use Rate",
+      smartEnergy: "Smart Energy Plan",
+    };
+    const ratesJson = JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8"));
+    // Apply rates.json like the live site does — this also restores derived fields
+    // (RATES._nonDelivery, RATES.tou.nonCommodity) after Test 5's allIn override.
+    calc.applyRates(ratesJson);
+
+    PLAN_KEYS.forEach((k) => {
+      const p = calc.RATES[k];
+      assert(!!p, `Plan ${k} exists in the inventory`);
+      assert(p.name === EXACT_NAMES[k], `${k} display name is exactly "${EXACT_NAMES[k]}" (got "${p.name}")`);
+      assert(p.basis === "energy" || p.basis === "demand", `${k} declares its pricing basis (${p.basis})`);
+      assert(typeof p.eligibility === "string" && p.eligibility.length > 0, `${k} declares eligibility`);
+      assert(typeof p.ratesAsOf === "string" && p.ratesAsOf.length > 0, `${k} declares a rates-as-of date`);
+      assert(typeof p.source === "string" && /^https:\/\//.test(p.source), `${k} links its ConEd source`);
+      assert(!!ratesJson[k], `rates.json carries the ${k} plan`);
+      assert(ratesJson[k].name === p.name && ratesJson[k].basis === p.basis &&
+             ratesJson[k].ratesAsOf === p.ratesAsOf && ratesJson[k].eligibility === p.eligibility,
+             `rates.json metadata mirrors calc.js for ${k}`);
+    });
+    assert(calc.RATES.steadyUse.formerly === "Select Pricing Plan",
+      `Steady Use carries its former name ("${calc.RATES.steadyUse.formerly}")`);
+    assert(calc.RATES.steadyUse.basis === "demand" && calc.RATES.smartEnergy.basis === "demand",
+      "Steady Use & Smart Energy are demand-based");
+    assert(calc.RATES.meta.version === "1.6.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Plan inventory tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 11: plan-by-plan comparison output from analyze() — one ranked entry per
+  // priced plan, with metadata, deltas vs Standard, and honest estimate flags.
+  console.log("Test 11: Plan-by-plan comparison output");
+  try {
+    const csvText = fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.csv"), "utf8");
+    const parsed = calc.parseGreenButton(csvText);
+    const a = calc.analyze(parsed);
+
+    assert(Array.isArray(a.comparison) && a.comparison.length === 4,
+      `Comparison covers all four plans (got ${a.comparison.length})`);
+    for (let i = 1; i < a.comparison.length; i++) {
+      assert(a.comparison[i].annualCost >= a.comparison[i - 1].annualCost,
+        `Comparison ranked cheapest-first at rank ${i + 1}`);
+    }
+    const stdE = a.comparison.find((p) => p.key === "standard");
+    assert(!!stdE && stdE.current === true, "Standard is flagged as the current plan");
+    assert(Math.abs(stdE.deltaAnnual) < 1e-9, "Standard's delta vs itself is 0");
+    const steadyE = a.comparison.find((p) => p.key === "steady");
+    assert(!!steadyE && steadyE.basis === "demand" && steadyE.estimate === true,
+      "Steady Use entry is a flagged demand estimate");
+    assert(steadyE.formerly === "Select Pricing Plan", "Steady Use comparison entry carries its former name");
+    a.comparison.forEach((e) => {
+      assert(!!e.name && !!e.basis && !!e.ratesAsOf && typeof e.annualCost === "number",
+        `Comparison entry "${e.key}" has name, basis, ratesAsOf, and annualCost`);
+    });
+    assert(a.comparison[0].key === a.cheapest.key, "Comparison head agrees with the cheapest plan");
+    assert(a.comparison.every((e) => typeof e.deltaAnnual === "number"),
+      "Every entry carries an annualized delta vs Standard");
+
+    // Months-only input (no interval data, like the built-in sample): the demand
+    // plans can't be derived, so the comparison must shrink to the energy plans.
+    const a2 = calc.analyze({ months: parsed.months, ndays: parsed.ndays });
+    assert(a2.comparison.length === 2, `Months-only input prices 2 plans (got ${a2.comparison.length})`);
+    assert(a2.comparison.every((e) => e.basis === "energy"), "Months-only comparison has energy plans only");
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Comparison output tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
 }
 
 // Summary (printed after the async format tests finish)

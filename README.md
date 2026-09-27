@@ -14,8 +14,8 @@ the month-over-month bill experience, is documented in
 ## What it does
 
 - Parses ConEd Green Button interval exports entirely in-browser — **CSV/TSV**, **XML (ESPI)**, or the **raw `.zip`** exactly as ConEd delivers it (see [Import formats](#import-formats--green-button-connect)).
-- Prices your usage under **Standard (SC1)** vs **Residential Time-of-Use**, month by month.
-- Shows the verdict (stay / switch + $), a per-plan table, your peak/off-peak load shape, and a monthly bar chart.
+- Prices your usage under **every currently-eligible SC1 residential plan**: Standard, Time-of-Use, and the demand-based Steady Use Rate (formerly the "Select Pricing Plan") and Smart Energy Plan.
+- Shows the verdict (stay / switch + $), a ranked **plan-by-plan comparison** — each plan with its exact ConEd display name, pricing basis (energy vs demand), eligibility, and the date its rates were last verified (demand-based plans are flagged as estimates) — plus your peak/off-peak load shape and a monthly bar chart.
 - Honest by design: for most (peak-heavy) NYC homes it will say **"stay on Standard."**
 
 ## Import formats & Green Button Connect

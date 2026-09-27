@@ -2,7 +2,7 @@
    Usage: node verify.js [path-to-green-button-export]
    Accepts the same formats as the browser tool: .csv/.tsv, .xml (ESPI), or the raw .zip.
    Defaults to test fixture: ./test/fixtures/sample-greenbutton.csv
-   Confirms the browser calc reproduces the analysis (expected ~$3,716 / ~$4,335). */
+   Confirms the browser calc reproduces the analysis (expected ~$5,945 / ~$7,665 annualized). */
 const fs = require("fs");
 const path = require("path");
 const calc = require("./public/calc.js");
@@ -39,6 +39,18 @@ function analyzeText(text) {
   console.log(`TOU:         $${a.touCost.toFixed(2)}  (annualized $${a.touAnnual.toFixed(0)})`);
   console.log(`TOU vs Std:  ${a.touDelta >= 0 ? "+" : ""}$${a.touDelta.toFixed(2)}`);
   console.log(`verdict:     ${a.recommendation}`);
+
+  // Plan-by-plan comparison: every priced plan with its metadata, ranked cheapest-first
+  console.log(`\nplan-by-plan comparison (ranked, ${a.comparison.length} plans priced on this usage):`);
+  a.comparison.forEach((e, i) => {
+    const label = `${e.name}${e.formerly ? ` (formerly ${e.formerly})` : ""}`;
+    const cost = `$${e.annualCost.toFixed(0)}/yr`;
+    const basis = e.basis + (e.estimate ? " estimate" : "");
+    const delta = e.current ? "current plan"
+      : `${e.deltaAnnual >= 0 ? "+" : "-"}$${Math.abs(e.deltaAnnual).toFixed(0)}/yr vs Standard`;
+    console.log(`  ${i + 1}. ${label} — ${cost} [${basis}] ${delta}`);
+    console.log(`     eligibility: ${e.eligibility} · rates: ${e.ratesAsOf}`);
+  });
 }
 
 // Same sniffing order as the browser (app.js): zip by magic bytes, then CSV-vs-XML auto-detect.

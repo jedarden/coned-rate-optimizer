@@ -6,8 +6,9 @@
 
   var RATES = {
     meta: {
-      version: "1.5.0",
+      version: "1.6.0",
       asOf: "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
+      reviewedThrough: "2026-07-01",
       utility: "Con Edison",
       serviceClass: "SC1 (Rate I) — NYC Residential",
       basis: "Standard/TOU = ConEd 2025 published SC1 NYC average (grossed up for GRT + sales tax). Demand plans use ConEd's published $/kW delivery rates.",
@@ -30,11 +31,45 @@
     },
     peakStartHour: 8,
     summerMonths: [6, 7, 8, 9],
-    standard: { name: "Standard Residential", allIn: 0.338267, commodity: 0.137533, delivery: 0.183233, customer: 16.33 },
-    tou: { name: "Time-of-Use", nonCommodity: 0.338267 - 0.137533, offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711, gross: 1.10, customer: 21.00 },
-    smartChargeNY: { name: "SmartCharge NY", offPeakCredit: 0.10, offPeakWindow: "midnight–8am" },
-    steadyUse: { name: "Steady Use Rate", eligibility: "heat-pump homes", peakStart: 12, peakEnd: 20, demand: { peakSummer: 27.35, peakWinter: 21.04, off: 7.17 }, customer: 16.33 },
-    smartEnergy: { name: "Smart Energy Plan", eligibility: "any smart-meter home", peakStart: 12, peakEnd: 20, demand: { peakSummer: 30.68, peakWinter: 23.60, off: 10.06 }, customer: 16.33 }
+    // Every currently-eligible SC1 residential plan, with the metadata the plan-by-plan
+    // comparison surfaces: ConEd's exact display name, pricing basis, eligibility, the
+    // date the rates were last verified, and the ConEd page they come from.
+    standard: {
+      name: "Standard Residential", short: "Standard", basis: "energy",
+      eligibility: "every SC1 residential customer (the default rate)",
+      ratesAsOf: "2025 published SC1 NYC averages (2026 usage priced at 2025 rates)",
+      source: "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
+      allIn: 0.338267, commodity: 0.137533, delivery: 0.183233, customer: 16.33
+    },
+    tou: {
+      name: "Time-of-Use", short: "TOU", basis: "energy",
+      eligibility: "SC1 residential customers who opt in",
+      ratesAsOf: "residential TOU supply rates current as of 2026-07",
+      source: "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
+      nonCommodity: 0.338267 - 0.137533, offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711, gross: 1.10, customer: 21.00
+    },
+    smartChargeNY: {
+      name: "SmartCharge NY", offPeakCredit: 0.10, offPeakWindow: "midnight–8am",
+      eligibility: "what-if only — Con Edison currently says Residential Time-of-Use customers are not eligible",
+      ratesAsOf: "incentive as published, verified 2026-07",
+      source: "https://www.coned.com/en/save-money/rebates-incentives-tax-credits/rebates-incentives-tax-credits-for-residential-customers/electric-vehicle-rewards"
+    },
+    steadyUse: {
+      name: "Steady Use Rate", short: "Steady Use", formerly: "Select Pricing Plan", basis: "demand",
+      eligibility: "designed for steady, heat-pump-style loads",
+      ratesAsOf: "delivery $/kW rates current as of 2026-07",
+      source: "https://www.coned.com/en/accounts-billing/steady-use-rate",
+      peakStart: 12, peakEnd: 20, peakWindow: "weekdays noon–8pm",
+      demand: { peakSummer: 27.35, peakWinter: 21.04, off: 7.17 }, customer: 16.33
+    },
+    smartEnergy: {
+      name: "Smart Energy Plan", short: "Smart Energy", basis: "demand",
+      eligibility: "any smart-meter home",
+      ratesAsOf: "delivery $/kW rates current as of 2026-07",
+      source: "https://www.coned.com/en/accounts-billing/smart-energy-plan",
+      peakStart: 12, peakEnd: 20, peakWindow: "weekdays noon–8pm",
+      demand: { peakSummer: 30.68, peakWinter: 23.60, off: 10.06 }, customer: 16.33
+    }
   };
   RATES._nonDelivery = RATES.standard.allIn - RATES.standard.delivery;
 
@@ -207,27 +242,47 @@
     ] };
   }
 
+  // RATES key for a plan key ("steady" -> steadyUse, "smart" -> smartEnergy).
+  function planRates(key) { return RATES[key === "steady" ? "steadyUse" : key === "smart" ? "smartEnergy" : key] || {}; }
+  // Copy the plan metadata (exact display name, basis, eligibility, as-of date) onto a priced plan.
+  function enrich(p) {
+    var r = planRates(p.key);
+    p.short = r.short || p.name;
+    p.basis = r.basis || (p.demand ? "demand" : "energy");
+    p.eligibility = r.eligibility || null;
+    p.formerly = r.formerly || null;
+    p.ratesAsOf = r.ratesAsOf || RATES.meta.asOf;
+    return p;
+  }
+
   function analyze(parsed, options) {
     var months = parsed.months ? parsed.months : parsed, hours = parsed.hours, ndays = parsed.ndays || 365;
     var totals = months.reduce(function (a, m) { a.total += m.total; a.peak += m.peak; a.off += m.off; return a; }, { total: 0, peak: 0, off: 0 });
     var factor = (ndays >= 350 && ndays <= 385) ? 1 : (ndays > 0 ? 365 / ndays : 1);
     var stdC = costStandard(months), touC = costTOU(months, options), std = stdC.total, tou = touC.total;
     var plans = [
-      { key: "standard", name: RATES.standard.name, cost: std, breakdown: stdC.lines, current: true, avail: true },
-      { key: "tou", name: RATES.tou.name, cost: tou, breakdown: touC.lines, avail: true, smartChargeNY: touC.smartChargeNY }
+      enrich({ key: "standard", name: RATES.standard.name, cost: std, breakdown: stdC.lines, current: true, avail: true }),
+      enrich({ key: "tou", name: RATES.tou.name, cost: tou, breakdown: touC.lines, avail: true, smartChargeNY: touC.smartChargeNY })
     ];
     var hasDemand = !!(hours && hours.length);
     if (hasDemand) {
       var s1 = costDemand(hours, RATES.steadyUse), s2 = costDemand(hours, RATES.smartEnergy);
-      plans.push({ key: "steady", name: RATES.steadyUse.name, cost: s1.total, breakdown: s1.lines, demand: true, eligibility: RATES.steadyUse.eligibility });
-      plans.push({ key: "smart", name: RATES.smartEnergy.name, cost: s2.total, breakdown: s2.lines, demand: true, eligibility: RATES.smartEnergy.eligibility });
+      plans.push(enrich({ key: "steady", name: RATES.steadyUse.name, cost: s1.total, breakdown: s1.lines, demand: true, eligibility: RATES.steadyUse.eligibility }));
+      plans.push(enrich({ key: "smart", name: RATES.smartEnergy.name, cost: s2.total, breakdown: s2.lines, demand: true, eligibility: RATES.smartEnergy.eligibility }));
     }
     var cheapest = plans.filter(function (p) { return p.avail; }).reduce(function (a, b) { return b.cost < a.cost ? b : a; });
     var bestDemand = plans.filter(function (p) { return p.demand; }).reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, null);
+    // Ranked plan-by-plan comparison: cheapest first, deltas vs the current Standard plan.
+    var comparison = plans.map(function (p) {
+      return { key: p.key, name: p.name, short: p.short, basis: p.basis, eligibility: p.eligibility, formerly: p.formerly,
+        current: !!p.current, estimate: !!p.demand, cost: p.cost, annualCost: p.cost * factor,
+        deltaAnnual: (p.cost - std) * factor, ratesAsOf: p.ratesAsOf };
+    }).sort(function (a, b) { return (a.annualCost - b.annualCost) || ((b.current ? 1 : 0) - (a.current ? 1 : 0)); });
     return {
       ndays: ndays, annualFactor: factor, totalKwh: totals.total, peakKwh: totals.peak, offKwh: totals.off,
       peakPct: totals.total ? totals.peak / totals.total * 100 : 0,
       months: months, hours: hours, plans: plans, cheapest: cheapest, hasDemand: hasDemand,
+      comparison: comparison,
       smartChargeNY: touC.smartChargeNY,
       bestDemand: bestDemand, demandOpportunity: bestDemand && bestDemand.cost < std * 0.97,
       standardCost: std, touCost: tou, standardAnnual: std * factor, touAnnual: tou * factor,

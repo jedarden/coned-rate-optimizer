@@ -54,7 +54,9 @@
       return '<tr><td>' + l.label + '</td><td class="det">' + l.detail + '</td><td class="num">' + usd(l.amount * factor) + '/yr</td></tr>';
     }).join("");
     return '<div class="mplan"><div class="mh">' + p.name + ' · <strong>' + usd(p.cost * factor) + '/yr</strong>' +
-      (p.demand ? ' <span class="tag">demand estimate</span>' : '') + '</div>' +
+      (p.formerly ? ' <span class="tag">formerly ' + p.formerly + '</span>' : '') +
+      (p.demand ? ' <span class="tag">demand estimate</span>' : '') +
+      (p.ratesAsOf ? ' <span class="tag">' + p.ratesAsOf + '</span>' : '') + '</div>' +
       '<table class="mtab"><tbody>' + lines + '</tbody></table></div>';
   }
 
@@ -119,6 +121,7 @@
         : '<span class="' + (d > 0 ? "delta-up" : "delta-down") + '">' + signed(d * a.annualFactor) + '/yr</span>';
       var tag = p.demand ? ' <span class="tag">demand-based est. · ' + p.eligibility + '</span>'
         : (p.smartChargeNY && p.smartChargeNY.enabled ? ' <span class="tag">includes SmartCharge NY what-if</span>' : '');
+      if (p.formerly) tag += ' <span class="tag">formerly ' + p.formerly + '</span>';
       return '<tr' + (p.current ? ' class="current"' : (p.demand ? ' class="est"' : '')) + '><td>' + p.name + tag + '</td>' +
         '<td class="num">' + usd(p.cost * a.annualFactor) + '/yr</td><td class="num">' + deltaCell + '</td></tr>';
     }).join("");
@@ -146,7 +149,7 @@
       '<div class="stats">' +
         '<div class="stat"><div class="k">Your usage</div><div class="v">' + Math.round(a.totalKwh * a.annualFactor).toLocaleString() + ' kWh/yr</div></div>' +
         '<div class="stat"><div class="k">Current plan (Standard)</div><div class="v">' + usd(a.standardAnnual) + '/yr</div></div>' +
-        '<div class="stat"><div class="k">Best plan</div><div class="v">' + a.cheapest.name.split(" ")[0] + '</div></div>' +
+        '<div class="stat"><div class="k">Best plan</div><div class="v">' + (a.cheapest.short || a.cheapest.name) + '</div></div>' +
       '</div>' +
       (label ? '<p class="legend">Showing: ' + label + '</p>' : '') +
       '<h3 class="sec">Every plan, priced on your usage</h3>' +
