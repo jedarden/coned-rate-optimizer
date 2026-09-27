@@ -12,7 +12,9 @@
     "eligibility": "every SC1 residential customer (the default rate)",
     "ratesAsOf": "2025 published SC1 NYC averages (2026 usage priced at 2025 rates); PDF verified 2026-07",
     "source": "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
-    "requires": { "serviceClass": "SC1" },
+    "requires": {
+      "serviceClass": "SC1"
+    },
     "lockIn": null,
     "allIn": 0.338267,
     "commodity": 0.137533,
@@ -26,7 +28,9 @@
     "eligibility": "SC1 residential customers who opt in",
     "ratesAsOf": "residential TOU supply rates current as of 2026-07",
     "source": "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
-    "requires": { "serviceClass": "SC1" },
+    "requires": {
+      "serviceClass": "SC1"
+    },
     "lockIn": {
       "minStayMonths": 12,
       "reenrollBlockMonths": 18,
@@ -36,15 +40,15 @@
     "offPeak": 0.0522,
     "peakSummer": 0.2786,
     "peakWinter": 0.1711,
-    "gross": 1.10,
-    "customer": 21.00
+    "gross": 1.1,
+    "customer": 21.0
   },
   "smartChargeNY": {
     "name": "SmartCharge NY",
     "eligibility": "what-if only — Con Edison currently says Residential Time-of-Use customers are not eligible",
     "ratesAsOf": "incentive as published, verified 2026-07",
     "source": "https://www.coned.com/en/save-money/rebates-incentives-tax-credits/rebates-incentives-tax-credits-for-residential-customers/electric-vehicle-rewards",
-    "offPeakCredit": 0.10,
+    "offPeakCredit": 0.1,
     "offPeakWindow": "midnight–8am"
   },
   "steadyUse": {
@@ -55,7 +59,10 @@
     "eligibility": "designed for steady, heat-pump-style loads",
     "ratesAsOf": "delivery $/kW rates current as of 2026-07",
     "source": "https://www.coned.com/en/accounts-billing/steady-use-rate",
-    "requires": { "serviceClass": "SC1", "meter": "smart" },
+    "requires": {
+      "serviceClass": "SC1",
+      "meter": "smart"
+    },
     "lockIn": {
       "cancelAnytime": true,
       "reenrollBlockMonths": 18,
@@ -64,7 +71,11 @@
     "solar": "ConEd says solar / net-metering homes are likely not a good fit for the Steady Use Rate — Standard or Time-of-Use may suit you better.",
     "smartChargeConflict": "Enrolling in Steady Use automatically unenrolls you from SmartCharge NY.",
     "peakWindow": "weekdays noon–8pm",
-    "demand": { "peakSummer": 27.35, "peakWinter": 21.04, "off": 7.17 },
+    "demand": {
+      "peakSummer": 27.35,
+      "peakWinter": 21.04,
+      "off": 7.17
+    },
     "customer": 16.33
   },
   "smartEnergy": {
@@ -74,7 +85,10 @@
     "eligibility": "any smart-meter home",
     "ratesAsOf": "delivery $/kW rates current as of 2026-07",
     "source": "https://www.coned.com/en/accounts-billing/smart-energy-plan",
-    "requires": { "serviceClass": "SC1", "meter": "smart" },
+    "requires": {
+      "serviceClass": "SC1",
+      "meter": "smart"
+    },
     "lockIn": {
       "cancelAnytime": true,
       "reenrollBlockMonths": 18,
@@ -82,17 +96,73 @@
     },
     "solar": "ConEd does not recommend the Smart Energy Plan for solar customers (its billing structure works against net metering) and suggests the Net Metering Plan instead.",
     "peakWindow": "weekdays noon–8pm",
-    "demand": { "peakSummer": 30.68, "peakWinter": 23.60, "off": 10.06 },
+    "demand": {
+      "peakSummer": 30.68,
+      "peakWinter": 23.60,
+      "off": 10.06
+    },
     "customer": 16.33
   },
   "bill": {
     "basis": "ConEd 3-Year Historical Average Full Service Electric Rates — NYC Residential SC 1, grossed up for GRT + sales tax, excluding customer charge & BPP",
     "source": "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
     "periods": [
-      { "year": 2023, "delivery": 0.153267, "commodity": 0.132800, "mac": 0.009900, "rdm": -0.006533, "surcharges": 0.005767 },
-      { "year": 2024, "delivery": 0.178967, "commodity": 0.129900, "mac": 0.009300, "rdm": 0.009000, "surcharges": 0.007367 },
-      { "year": 2025, "delivery": 0.183233, "commodity": 0.137533, "mac": 0.008133, "rdm": 0.002867, "surcharges": 0.006500 }
+      {
+        "year": 2023,
+        "delivery": 0.153267,
+        "commodity": 0.132800,
+        "mac": 0.009900,
+        "rdm": -0.006533,
+        "surcharges": 0.005767
+      },
+      {
+        "year": 2024,
+        "delivery": 0.178967,
+        "commodity": 0.129900,
+        "mac": 0.009300,
+        "rdm": 0.009000,
+        "surcharges": 0.007367
+      },
+      {
+        "year": 2025,
+        "delivery": 0.183233,
+        "commodity": 0.137533,
+        "mac": 0.008133,
+        "rdm": 0.002867,
+        "surcharges": 0.006500
+      }
     ]
   },
-  "accuracy": { "passPct": 2, "warnPct": 5, "gateFraction": 0.95, "basis": "docs/product-strategy.md 'Accuracy gate': charge only when ≥95% of complete, supported billing periods reconcile within passPct of the actual bill" }
+  "accuracy": {
+    "passPct": 2,
+    "warnPct": 5,
+    "gateFraction": 0.95,
+    "basis": "docs/product-strategy.md 'Accuracy gate': charge only when ≥95% of complete, supported billing periods reconcile within passPct of the actual bill"
+  },
+  "pricing": {
+    "policyVersion": 1,
+    "currency": "usd",
+    "report": {
+      "name": "Self-service report",
+      "price": 29
+    },
+    "threshold": 150,
+    "concierge": {
+      "min": 99,
+      "pctOfVerifiedSavings": 0.2
+    },
+    "monitoring": {
+      "price": 29,
+      "per": "year"
+    },
+    "refund": {
+      "windowDays": 14
+    },
+    "maxPaymentAttempts": 3,
+    "savingsBandPct": 0.05,
+    "demandBandPct": 0.1,
+    "chargingCertified": false,
+    "provider": null,
+    "basis": "docs/product-strategy.md 'Pricing' + 'Accuracy gate': $29 report only when projected first-year savings exceed $150 (measured at the low end of the range); never charged until the 20-account backtest certifies the model and a payment provider is wired"
+  }
 }

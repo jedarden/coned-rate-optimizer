@@ -6,7 +6,7 @@
 
   var RATES = {
     meta: {
-      version: "1.9.0",
+      version: "1.10.0",
       asOf: "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
       reviewedThrough: "2026-07-01",
       utility: "Con Edison",
@@ -121,7 +121,30 @@
     // lands within passPct of the actual bill reconciles; within warnPct matches the ±~5%
     // caveat the comparison has always carried; an account may only be trusted (never charged)
     // when at least gateFraction of its supported billing periods reconcile within passPct.
-    accuracy: { passPct: 2, warnPct: 5, gateFraction: 0.95, basis: "docs/product-strategy.md 'Accuracy gate': charge only when ≥95% of complete, supported billing periods reconcile within passPct of the actual bill" }
+    accuracy: { passPct: 2, warnPct: 5, gateFraction: 0.95, basis: "docs/product-strategy.md 'Accuracy gate': charge only when ≥95% of complete, supported billing periods reconcile within passPct of the actual bill" },
+    // Paid-conversion policy (docs/product-strategy.md, "Pricing" + "Accuracy gate"). The
+    // analysis is free and a no-savings result is never hidden behind payment; the $29
+    // report may be charged only when the projected first-year saving clears the
+    // meaningful-savings threshold — measured at the LOW end of the savings range, so the
+    // pessimistic reading still has to clear the bar — and only once charging is certified
+    // (the strategy's ≥20-backtested-accounts gate) AND a payment provider is wired. Both
+    // flags ship false: qualified analyses see the offer they'd qualify for, with the named
+    // reason no charge can be taken yet, and nothing is ever collected.
+    pricing: {
+      policyVersion: 1,
+      currency: "usd",
+      report: { name: "Self-service report", price: 29 },
+      threshold: 150,
+      concierge: { min: 99, pctOfVerifiedSavings: 0.20 },
+      monitoring: { price: 29, per: "year" },
+      refund: { windowDays: 14 },
+      maxPaymentAttempts: 3,
+      savingsBandPct: 0.05,      // ±5% — the absolute-total caveat (meta.caveats[0])
+      demandBandPct: 0.10,       // demand-plan targets: supply held flat, exact rates unpublished → wider
+      chargingCertified: false,  // docs/product-strategy.md accuracy gate: ≥20 backtested real accounts
+      provider: null,            // payment-provider handoff — set when charging is armed
+      basis: "docs/product-strategy.md 'Pricing' + 'Accuracy gate': $29 report only when projected first-year savings exceed $150 (measured at the low end of the range); never charged until the 20-account backtest certifies the model and a payment provider is wired"
+    }
   };
   RATES._nonDelivery = RATES.standard.allIn - RATES.standard.delivery;
 
@@ -681,6 +704,236 @@
     return { level: level, reasons: reasons };
   }
 
+  // ---- paid conversion (docs/product-strategy.md, "Free result" → "Paid result") ----
+  // The analysis is free, and a no-savings verdict is itself the product ("Do not hide
+  // a 'no savings' result behind payment"). The paid report is offered only when the
+  // projected first-year saving is real AND meaningful; the charge is taken only when
+  // the deployment is certified to charge at all.
+
+  function usd0(n) { return (n < 0 ? "−$" : "$") + Math.abs(Math.round(n)).toLocaleString("en-US"); }
+
+  // The annual-savings RANGE the free verdict shows ("the estimated annual opportunity,
+  // as a range"). The comparison's honest uncertainty — ±~5% on absolute totals, wider
+  // for a demand-plan target whose supply rates aren't published — is applied
+  // adversarially to both sides of the difference: the low end prices the current plan
+  // at its cheap edge and the alternative at its expensive edge, so `low` is the
+  // pessimistic reading the meaningful-savings threshold is measured against.
+  function savingsRange(curAnnual, altAnnual, bandPct) {
+    var b = isFinite(bandPct) && bandPct > 0 ? bandPct : (RATES.pricing || {}).savingsBandPct || 0.05;
+    return {
+      estimate: curAnnual - altAnnual,
+      low: curAnnual * (1 - b) - altAnnual * (1 + b),
+      high: curAnnual * (1 + b) - altAnnual * (1 - b),
+      bandPct: b
+    };
+  }
+
+  // The free-verdict-to-paid-result gate. `a` is an analyze() result (or the fields of
+  // one this flow reads: plans, switchTarget, savings, annualFactor,
+  // eligibility, confidence, savings). Returns:
+  //   eligible    — savings-qualified and actionable: this analysis MAY be offered the report
+  //   collectible — eligible AND the deployment may actually take the charge
+  //                 (accuracy-gate certified + payment provider wired)
+  //   reasons     — every failed condition named, in the confidence system's style
+  //   offer / noSavings — exactly one side of the flow's fork
+  function paidConversion(a) {
+    a = a || {};
+    var P = RATES.pricing || {};
+    var factor = a.annualFactor || 1;
+    var reasons = [];
+    var target = a.switchTarget || null;
+    var blockers = (a.eligibility && a.eligibility.blockers) || [];
+    var cur = (a.plans || []).filter(function (p) { return p.current; })[0] || (a.plans || [])[0];
+    var curCost = cur ? cur.cost : 0, altCost = target ? target.cost : curCost;
+    var band = target && target.demand ? (P.demandBandPct || 0.10) : (P.savingsBandPct || 0.05);
+    var savings = a.savings || savingsRange(curCost * factor, altCost * factor, band);
+    var threshold = P.threshold;
+    var thresholdCleared = isFinite(threshold) && savings.low > threshold;
+    var hasSaving = !!target && savings.estimate > 0;
+    var confidenceLevel = a.confidence && a.confidence.level;
+
+    if (blockers.length) {
+      reasons.push("the analysis is blocked — the account you described isn't one this tool can advise on, so nothing is offered.");
+    } else if (!hasSaving) {
+      reasons.push("no eligible plan switch lowers this bill — there is nothing to sell, and nothing is hidden behind payment.");
+    } else if (!thresholdCleared) {
+      reasons.push("a switch would save an estimated " + usd0(savings.estimate) + "/yr (range " + usd0(savings.low) + "–" + usd0(savings.high) +
+        "), under the " + usd0(threshold) + "/yr meaningful-savings bar for the report — the free comparison already covers you.");
+    } else if (confidenceLevel === "low") {
+      reasons.push("the model disagrees with your actual bills — a charge is never taken against that evidence.");
+    }
+
+    var eligible = !blockers.length && hasSaving && thresholdCleared && confidenceLevel !== "low";
+    var collectible = false;
+    if (eligible) {
+      if (P.chargingCertified !== true) {
+        reasons.push("charging isn't armed in this deployment — the strategy's accuracy gate (≥20 backtested real accounts) isn't certified, so the report can't be sold to anyone yet.");
+      } else if (!P.provider) {
+        reasons.push("no payment provider is wired into this deployment.");
+      }
+      collectible = P.chargingCertified === true && !!P.provider;
+    }
+
+    var offer = null;
+    if (eligible) {
+      offer = {
+        product: "report",
+        name: (P.report && P.report.name) || "Self-service report",
+        price: P.report && P.report.price,
+        currency: P.currency || "usd",
+        policyVersion: P.policyVersion,
+        savings: savings, threshold: threshold,
+        demandEstimate: !!(target && target.demand),
+        targetPlan: target ? { key: target.key, name: target.name, lockIn: target.lockIn || null } : null,
+        // The strategy's "Paid result" contents, quoted so the offer never invents scope.
+        includes: [
+          "complete plan-by-plan comparison",
+          "exact rate name and eligibility notes",
+          "month-by-month counterfactual charges",
+          "switching timing and lock-in warning",
+          "step-by-step enrollment instructions",
+          "optional concierge switching and first-year verification"
+        ]
+      };
+    }
+
+    var noSavings = null;
+    if (!blockers.length && !hasSaving) {
+      noSavings = {
+        message: "Your current plan is the cheapest eligible plan for your usage — there is nothing to sell you here, and nothing about this result is hidden behind payment.",
+        annualRecheck: "Rates and load shapes change: re-run the analysis after a season (or a year) and it re-checks every plan on whatever your usage does next."
+      };
+    }
+
+    return {
+      eligible: eligible, collectible: collectible, reasons: reasons,
+      savings: savings,
+      threshold: { value: threshold, cleared: thresholdCleared, measure: "low end of the savings range" },
+      offer: offer, noSavings: noSavings
+    };
+  }
+
+  // Explicit consent before any charge. The record must name the current pricing-policy
+  // version (a consent given under one price can't authorize a charge under another)
+  // and carry every required acknowledgment. The payment flow's "consent" transition
+  // calls this — nothing charges without it passing.
+  var CONSENT_FIELDS = [
+    { key: "sawPrice", label: "saw the report's price" },
+    { key: "sawContents", label: "saw what the report contains" },
+    { key: "sawNoAffiliation", label: "saw that this service is independent — not Con Edison" },
+    { key: "sawEstimateCaveat", label: "saw that the savings are a projected estimate, not a guarantee" },
+    { key: "authorizesCharge", label: "authorized the charge itself" }
+  ];
+  function validateConsent(record, pricing) {
+    var P = pricing || RATES.pricing || {};
+    if (!record || typeof record !== "object") return { valid: false, missing: [], reason: "no consent recorded" };
+    if (record.version !== P.policyVersion) {
+      return { valid: false, missing: [], reason: "consent was given under pricing policy v" + record.version +
+        "; the current policy is v" + P.policyVersion + " — re-consent required" };
+    }
+    var missing = CONSENT_FIELDS.filter(function (f) { return record[f.key] !== true; }).map(function (f) { return f.label; });
+    if (missing.length) return { valid: false, missing: missing, reason: "consent is missing: " + missing.join("; ") };
+    if (typeof record.grantedAt !== "number" || !isFinite(record.grantedAt)) {
+      return { valid: false, missing: ["a consent timestamp"], reason: "consent carries no timestamp" };
+    }
+    return { valid: true, missing: [], reason: null };
+  }
+
+  // Refund policy: full refund through two doors — "the report's own claim didn't hold"
+  // (any time: the value promise is ours to keep), or change of mind within the policy
+  // window. Idempotent: an already-refunded purchase is never refunded twice.
+  function refundDecision(purchase, request, now) {
+    var P = RATES.pricing || {}, win = P.refund && P.refund.windowDays;
+    var t = typeof now === "number" && isFinite(now) ? now : Date.now();
+    if (!purchase || typeof purchase.paidAt !== "number" || !(purchase.amount > 0)) {
+      return { granted: false, amount: 0, reason: "nothing paid — nothing to refund" };
+    }
+    if (purchase.refunded) return { granted: false, amount: 0, reason: "already refunded" };
+    if (request && request.reason === "savings_not_realized") {
+      return { granted: true, amount: purchase.amount, reason: "the report's projected saving didn't hold — refunded in full, any time" };
+    }
+    if (request && request.reason === "change_of_mind") {
+      if (isFinite(win) && (t - purchase.paidAt) <= win * 86400000) {
+        return { granted: true, amount: purchase.amount, reason: "change of mind within the " + win + "-day window" };
+      }
+      return { granted: false, amount: 0, reason: "the " + win + "-day change-of-mind window has passed (a saving that doesn't hold is still refundable any time)" };
+    }
+    return { granted: false, amount: 0, reason: "unrecognized refund reason" };
+  }
+
+  // The payment state machine — the only path from "offered" to a charge, with every
+  // fork the strategy names handled explicitly: no savings (never offered), failed
+  // payment (bounded retries, the free result untouched), refund (policy-decided,
+  // idempotent), and consent (validated, version-bound, and worthless without an active
+  // offer — a consent event can never start a charge the verdict didn't offer).
+  //
+  // flow: the current flow object (null to start); NEVER mutated — every transition
+  // returns a new one, so a re-render can replay safely.
+  //   states:  start → offered | not_offered | unavailable → consented → charging
+  //            → paid → refunded;  charging → failed → charging | abandoned
+  //   events:  verdict, consent, charge, charge_failed, charge_succeeded, refund_requested
+  // ctx: { pricing, now } — pricing overrides RATES.pricing (tests, future per-deploy policy).
+  function newPaymentFlow() {
+    return { state: "start", attempts: 0, consent: null, purchase: null, refund: null, reason: null };
+  }
+  function paymentTransition(flow, event, payload, ctx) {
+    var f = JSON.parse(JSON.stringify(flow || newPaymentFlow()));   // flows are tiny; copy beats aliasing
+    var P = (ctx && ctx.pricing) || RATES.pricing || {};
+    f.reason = null;
+    function refuse(reason) { f.reason = reason; return f; }
+
+    if (event === "verdict") {
+      var paid = payload && payload.paid;
+      if (!paid) return refuse("no verdict to act on");
+      if (!paid.eligible) { f.state = "not_offered"; f.reason = paid.noSavings ? null : (paid.reasons[0] || null); return f; }
+      if (!paid.collectible) { f.state = "unavailable"; f.reason = paid.reasons[paid.reasons.length - 1] || null; return f; }
+      f.state = "offered"; return f;
+    }
+    if (event === "consent") {
+      if (f.state !== "offered") return refuse("no offer is active — consent can't start a charge the verdict never offered");
+      var v = validateConsent(payload && payload.consent, P);
+      if (!v.valid) return refuse(v.reason);
+      f.consent = payload.consent; f.state = "consented";
+      return f;
+    }
+    if (event === "charge") {
+      if (f.state === "abandoned") return refuse("this offer was withdrawn after " + (P.maxPaymentAttempts || 3) + " failed payment attempts");
+      if (f.state !== "consented" && f.state !== "failed") return refuse("no authorized charge is pending");
+      f.state = "charging";
+      return f;
+    }
+    if (event === "charge_failed") {
+      if (f.state !== "charging") return refuse("no charge in flight");
+      f.attempts += 1;
+      var max = P.maxPaymentAttempts || 3, left = max - f.attempts;
+      if (left <= 0) {
+        f.state = "abandoned";
+        f.reason = "payment failed " + f.attempts + " times — the offer is withdrawn for this session (your free result is unaffected)";
+      } else {
+        f.state = "failed";
+        f.reason = "payment failed — you can retry (" + left + " attempt" + (left === 1 ? "" : "s") + " left)";
+      }
+      return f;
+    }
+    if (event === "charge_succeeded") {
+      if (f.state !== "charging") return refuse("no charge in flight");
+      f.attempts += 1;
+      f.state = "paid";
+      f.purchase = { paidAt: (ctx && ctx.now) || Date.now(), amount: P.report && P.report.price, currency: P.currency || "usd", refunded: false };
+      return f;
+    }
+    if (event === "refund_requested") {
+      if (f.state !== "paid") return refuse("nothing to refund — no completed purchase in this flow");
+      var d = refundDecision(f.purchase, payload || {}, ctx && ctx.now);
+      if (!d.granted) { f.reason = d.reason; return f; }
+      f.purchase.refunded = true;
+      f.refund = { amount: d.amount, requested: payload.reason, decided: d.reason, at: (ctx && ctx.now) || Date.now() };
+      f.state = "refunded";
+      return f;
+    }
+    return refuse("unknown event");
+  }
+
   // ---- period dashboard (docs/product-strategy.md, "Month-over-month experience") ----
   // Answers the doc's four questions over the measured window, one row per period:
   // what did I pay (actual), why did it change (decomposition), am I still on the best
@@ -1031,7 +1284,7 @@
     else if (!switchTarget) recommendation = "No eligible alternative — " + (currentPlan ? currentPlan.name : "your current plan") + " is the only plan available to you.";
     else if (switchTarget.cost < curCost - 0.005) recommendation = "Switch to " + switchTarget.name + " to save.";
     else recommendation = "Stay on " + (currentPlan ? currentPlan.short || currentPlan.name : "Standard") + " — no plan switch lowers your bill.";
-    return {
+    var result = {
       ndays: ndays, annualFactor: factor, totalKwh: totals.total, peakKwh: totals.peak, offKwh: totals.off,
       peakPct: totals.total ? totals.peak / totals.total * 100 : 0,
       months: months, hours: hours, plans: plans, cheapest: cheapest, hasDemand: hasDemand,
@@ -1051,6 +1304,14 @@
       dataQuality: audit,
       confidence: confidence
     };
+    // The free verdict shows the annual opportunity as a RANGE (the strategy's free-result
+    // list), and the paid-conversion gate rides on the assembled analysis — eligibility for
+    // the offer, the meaningful-savings threshold, and whether charging may happen at all.
+    var pcfg = RATES.pricing || {};
+    result.savings = savingsRange(curCost * factor, (switchTarget ? switchTarget.cost : curCost) * factor,
+      switchTarget && switchTarget.demand ? pcfg.demandBandPct : pcfg.savingsBandPct);
+    result.paid = paidConversion(result);
+    return result;
   }
 
   // ---- ZIP support (client-side, deflate) ----
@@ -1081,7 +1342,8 @@
   var api = { RATES: RATES, parse: parse, parseGreenButton: parseGreenButton, parseESPI: parseESPI, costStandard: costStandard, costTOU: costTOU, costDemand: costDemand, analyze: analyze, checkEligibility: checkEligibility, normalizeProfile: normalizeProfile, unzipCsv: unzipCsv, applyRates: applyRates,
     BILL_COMPONENTS: BILL_COMPONENTS, billRatePeriod: billRatePeriod, reconstructBill: reconstructBill, reconcileBill: reconcileBill, accuracyGate: accuracyGate, accuracyThresholds: accuracyThresholds,
     parseBillingESPI: parseBillingESPI, normalizeBills: normalizeBills, reconcileBills: reconcileBills, auditDataQuality: auditDataQuality, assessConfidence: assessConfidence,
-    planRates: planRates, daysInMonth: daysInMonth, periodsFrom: periodsFrom, pricePeriod: pricePeriod, decomposeChange: decomposeChange, rateDriver: rateDriver, periodDashboard: periodDashboard };
+    planRates: planRates, daysInMonth: daysInMonth, periodsFrom: periodsFrom, pricePeriod: pricePeriod, decomposeChange: decomposeChange, rateDriver: rateDriver, periodDashboard: periodDashboard,
+    savingsRange: savingsRange, paidConversion: paidConversion, CONSENT_FIELDS: CONSENT_FIELDS, validateConsent: validateConsent, refundDecision: refundDecision, newPaymentFlow: newPaymentFlow, paymentTransition: paymentTransition };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ConedCalc = api;
 })(typeof window !== "undefined" ? window : globalThis);

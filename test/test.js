@@ -369,7 +369,7 @@ async function runFormatTests() {
       `Steady Use carries its former name ("${calc.RATES.steadyUse.formerly}")`);
     assert(calc.RATES.steadyUse.basis === "demand" && calc.RATES.smartEnergy.basis === "demand",
       "Steady Use & Smart Energy are demand-based");
-    assert(calc.RATES.meta.version === "1.9.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
+    assert(calc.RATES.meta.version === "1.10.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
     console.log("");
   } catch (e) {
     console.log(`  ✗ Plan inventory tests failed: ${e.message}`);
@@ -1230,6 +1230,197 @@ try {
   console.log("");
 } catch (e) {
   console.log(`  ✗ Billing-feed/confidence tests failed: ${e.message}`);
+  testsFailed++;
+  console.log("");
+}
+
+// Test 18: Paid conversion — the free-verdict-to-paid-result flow. The analysis is
+// free and a no-savings result is never hidden behind payment: the $29 report is
+// offered only when the projected first-year saving is real AND meaningful (measured
+// at the LOW end of its uncertainty range), and a charge is taken only when the
+// deployment is certified to charge at all.
+console.log("Test 20: Paid conversion (offer gate, consent, payment flow, refunds)");
+try {
+  calc.applyRates(JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8")));
+  const P = calc.RATES.pricing;
+  assert(P.chargingCertified === false && P.provider === null,
+    "this deployment ships uncertified and provider-less: nothing can ever be charged");
+
+  // -- savingsRange: the comparison's uncertainty is applied adversarially to both sides --
+  const sr = calc.savingsRange(2000, 1800, 0.05);
+  assertClose(sr.estimate, 200, 1e-9, "savingsRange's estimate is the plain difference");
+  assertClose(sr.low, 2000 * 0.95 - 1800 * 1.05, 1e-9,
+    "the low end prices the current plan at its cheap edge and the alternative at its dear one");
+  assertClose(sr.high, 2000 * 1.05 - 1800 * 0.95, 1e-9, "the high end mirrors it");
+  assert(sr.low < sr.estimate && sr.estimate < sr.high, "the range brackets the estimate");
+
+  // -- paidConversion: every fork names its reason --
+  const mkA = (over) => Object.assign({
+    annualFactor: 1,
+    plans: [
+      { key: "standard", name: "Standard Residential", cost: 2000, current: true },
+      { key: "tou", name: "Time-of-Use", cost: 1800 }
+    ],
+    switchTarget: { key: "tou", name: "Time-of-Use", cost: 1800 },
+    eligibility: { blockers: [], notes: [] },
+    confidence: { level: "high", reasons: [] }
+  }, over || {});
+
+  const none = calc.paidConversion(mkA({ switchTarget: null }));
+  assert(none.eligible === false && none.offer === null && none.noSavings !== null,
+    "no cheaper eligible plan lands on the honest no-savings fork, nothing hidden");
+  assert(none.reasons[0].includes("nothing to sell"),
+    `the no-savings reason says so outright ("${none.reasons[0].slice(0, 48)}…")`);
+
+  const under = calc.paidConversion(mkA({}));
+  assert(under.eligible === false && under.offer === null && under.noSavings === null,
+    "a real but meaningless saving is neither offered nor dressed up as no-savings");
+  assert(under.reasons[0].includes("under the $150/yr") && under.reasons[0].includes("range"),
+    `the under-threshold reason quotes the estimate, its range, and the bar ("${under.reasons[0].slice(0, 52)}…")`);
+
+  const blocked = calc.paidConversion(mkA({ eligibility: { blockers: ["no smart meter"], notes: [] } }));
+  assert(blocked.eligible === false && blocked.noSavings === null,
+    "a blocked analysis offers nothing — and is not claimed as a no-savings result");
+  assert(blocked.reasons[0].includes("blocked"), "the blocked reason names the block, not the savings");
+
+  const distrust = calc.paidConversion(mkA({ switchTarget: { key: "tou", name: "Time-of-Use", cost: 1400 },
+    confidence: { level: "low", reasons: [] } }));
+  assert(distrust.eligible === false && distrust.offer === null,
+    "a saving that clears the bar is still not offered against low confidence");
+  assert(distrust.reasons[0].includes("disagrees"), "the low-confidence reason cites the model's disagreement with actual bills");
+
+  const clear = mkA({ switchTarget: { key: "tou", name: "Time-of-Use", cost: 1400 } });
+  const eligible = calc.paidConversion(clear);
+  assert(eligible.eligible === true && eligible.offer !== null,
+    "a meaningful saving on a trusted analysis earns the offer");
+  assertClose(eligible.savings.low, 2000 * 0.95 - 1400 * 1.05, 1e-9,
+    "the offer carries the pessimistic end it cleared the bar on");
+  assert(eligible.offer.price === 29 && eligible.offer.currency === "usd" && eligible.offer.policyVersion === P.policyVersion,
+    "the offer quotes the strategy's $29 report under the current policy version");
+  assert(eligible.offer.includes.length === 6 && eligible.offer.includes[0] === "complete plan-by-plan comparison",
+    "the offer's contents quote the strategy's paid-result list, never invented scope");
+  assert(eligible.collectible === false && eligible.reasons[0].includes("charging isn't armed"),
+    "but this deployment can't take the charge — the accuracy-gate certification is pending");
+
+  const demand = calc.paidConversion(mkA({ switchTarget: { key: "steady", name: "Steady Use Rate", cost: 1400, demand: true } }));
+  assertClose(demand.savings.bandPct, 0.10, 1e-9,
+    "a demand-plan target gets the wider band (supply held flat, exact rates unpublished)");
+  assert(demand.eligible === true && demand.offer.demandEstimate === true,
+    "the wider band still clears the bar at this spread, and the offer flags the estimate");
+
+  try {
+    P.chargingCertified = true;
+    const noProvider = calc.paidConversion(clear);
+    assert(noProvider.collectible === false && noProvider.reasons[0].includes("no payment provider"),
+      "certified but provider-less still cannot collect");
+    P.provider = { id: "test-provider" };
+    const armed = calc.paidConversion(clear);
+    assert(armed.collectible === true && armed.reasons.length === 0,
+      "certified and wired → collectible, with no reasons left standing");
+  } finally {
+    P.chargingCertified = false;
+    P.provider = null;
+  }
+
+  // -- validateConsent: explicit, version-bound, every acknowledgment named --
+  const consent = { version: P.policyVersion, sawPrice: true, sawContents: true, sawNoAffiliation: true,
+    sawEstimateCaveat: true, authorizesCharge: true, grantedAt: 1700000000000 };
+  assert(calc.validateConsent(null).valid === false, "no consent recorded is invalid");
+  const stale = calc.validateConsent(Object.assign({}, consent, { version: P.policyVersion - 1 }));
+  assert(stale.valid === false && stale.reason.includes("re-consent"),
+    "consent given under one price can't authorize a charge under another");
+  const partial = calc.validateConsent(Object.assign({}, consent, { sawNoAffiliation: false }));
+  assert(partial.valid === false && partial.missing.join("; ").includes("independent"),
+    "a missing acknowledgment is named, not guessed");
+  assert(calc.validateConsent(Object.assign({}, consent, { grantedAt: "recently" })).valid === false,
+    "consent without a timestamp is invalid");
+  assert(calc.validateConsent(consent).valid === true, "a complete, version-matched consent validates");
+
+  // -- refundDecision: two doors, idempotent, nothing vague --
+  const now = 1700000000000;
+  const oldPurchase = { paidAt: now - 40 * 86400000, amount: 29, refunded: false };
+  assert(calc.refundDecision(null, { reason: "change_of_mind" }, now).granted === false,
+    "nothing paid → nothing to refund");
+  assert(calc.refundDecision({ paidAt: now, amount: 29, refunded: true }, { reason: "savings_not_realized" }, now).granted === false,
+    "an already-refunded purchase is never refunded twice");
+  const late = calc.refundDecision(oldPurchase, { reason: "change_of_mind" }, now);
+  assert(late.granted === false && late.reason.includes("14-day"),
+    "change of mind past the window is refused — with the other door named");
+  const notReal = calc.refundDecision(oldPurchase, { reason: "savings_not_realized" }, now);
+  assert(notReal.granted === true && notReal.amount === 29,
+    "a saving that didn't hold is refunded in full, any time");
+  assert(calc.refundDecision(Object.assign({}, oldPurchase, { paidAt: now - 3 * 86400000 }),
+    { reason: "change_of_mind" }, now).granted === true, "change of mind inside the window is granted");
+  assert(calc.refundDecision(oldPurchase, { reason: "because" }, now).granted === false,
+    "an unrecognized reason is refused");
+
+  // -- paymentTransition: the only path from offered to charged --
+  const offered0 = calc.newPaymentFlow();
+  const offered = calc.paymentTransition(offered0, "verdict", { paid: { eligible: true, collectible: true, reasons: [], noSavings: null } });
+  assert(offered.state === "offered", "an eligible, collectible verdict opens the offer");
+  assert(offered0.state === "start", "transitions never mutate the flow they're given");
+  assert(calc.paymentTransition(calc.newPaymentFlow(), "verdict",
+      { paid: { eligible: false, collectible: false, reasons: [], noSavings: { message: "x" } } }).state === "not_offered",
+    "the no-savings verdict never opens an offer");
+  const unavailable = calc.paymentTransition(calc.newPaymentFlow(), "verdict",
+    { paid: { eligible: true, collectible: false, reasons: ["charging isn't armed in this deployment"], noSavings: null } });
+  assert(unavailable.state === "unavailable" && unavailable.reason.includes("isn't armed"),
+    "an uncollectible verdict marks the offer unavailable, naming why");
+  assert(calc.paymentTransition(calc.newPaymentFlow(), "consent", { consent: consent }).reason !== null,
+    "consent can't start a charge the verdict never offered");
+
+  const consented = calc.paymentTransition(offered, "consent", { consent: consent });
+  assert(consented.state === "consented" && consented.consent.version === P.policyVersion,
+    "a valid consent authorizes the pending charge");
+  assert(calc.paymentTransition(offered, "consent", { consent: Object.assign({}, consent, { authorizesCharge: false }) }).state === "offered",
+    "an incomplete consent is refused and the offer stays open");
+
+  let f = calc.paymentTransition(consented, "charge");
+  assert(f.state === "charging", "charge moves the flow into charging");
+  f = calc.paymentTransition(f, "charge_failed");
+  assert(f.state === "failed" && f.attempts === 1 && f.reason.includes("2 attempts left"),
+    "a failed charge says how many attempts remain");
+  f = calc.paymentTransition(calc.paymentTransition(f, "charge"), "charge_failed");
+  assert(f.state === "failed" && f.attempts === 2, "the second retry keeps the offer alive");
+  f = calc.paymentTransition(calc.paymentTransition(f, "charge"), "charge_failed");
+  assert(f.state === "abandoned" && f.attempts === 3, "the third failure withdraws the offer for the session");
+  assert(calc.paymentTransition(f, "charge").state === "abandoned",
+    "an abandoned flow refuses further charges");
+
+  const t0 = 1700000000000;
+  const paidF = calc.paymentTransition(calc.paymentTransition(consented, "charge"), "charge_succeeded", {}, { now: t0 });
+  assert(paidF.state === "paid" && paidF.purchase.amount === 29 && paidF.purchase.refunded === false,
+    "a succeeded charge records the purchase at the quoted price");
+  const refunded = calc.paymentTransition(paidF, "refund_requested", { reason: "savings_not_realized" }, { now: t0 + 86400000 });
+  assert(refunded.state === "refunded" && refunded.purchase.refunded === true && refunded.refund.amount === 29,
+    "the report's claim not holding refunds in full — past the change-of-mind window too");
+  assert(calc.paymentTransition(refunded, "refund_requested", { reason: "change_of_mind" }, { now: t0 + 86400000 }).state === "refunded",
+    "a refunded flow is idempotent — there is nothing left to refund");
+  assert(calc.paymentTransition(paidF, "refund_requested", { reason: "change_of_mind" }, { now: t0 + 40 * 86400000 }).state === "paid",
+    "a change of mind past the window leaves the purchase standing (the savings door stays open)");
+
+  // -- analyze() end to end: the verdict carries its own paid-conversion evidence --
+  const sampleA = calc.analyze(calc.parseGreenButton(fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.csv"), "utf8")));
+  assert(sampleA.savings && isFinite(sampleA.savings.low) && sampleA.savings.low <= sampleA.savings.estimate && sampleA.savings.estimate <= sampleA.savings.high,
+    "analyze() publishes the annual-savings range alongside the free verdict");
+  assert(sampleA.paid.eligible === false && sampleA.paid.noSavings !== null && sampleA.paid.offer === null,
+    "the peak-heavy sample honestly lands on the no-savings fork");
+
+  const flatHours = [], flatMonths = [];
+  [["2026-07", 7, true], ["2027-01", 1, false]].forEach(([ym, mo, summer]) => {
+    for (let i = 0; i < 500; i++) flatHours.push({ ym, mo, hour: i % 12, weekday: 1 + (i % 5), kwh: 4 });
+    flatHours.push({ ym, mo, hour: 12, weekday: 1, kwh: 1 }, { ym, mo, hour: 13, weekday: 1, kwh: 1 }, { ym, mo, hour: 14, weekday: 1, kwh: 1 });
+    flatMonths.push({ ym, mo, summer, total: 2003, peak: 3, off: 2000 });
+  });
+  const flatA = calc.analyze({ months: flatMonths, hours: flatHours, ndays: 61 });
+  assert(flatA.paid.eligible === true && flatA.paid.offer !== null && flatA.paid.collectible === false,
+    "a flat heavy load clears the meaningful-savings bar on its demand target — offered, not collectible");
+  assert(flatA.paid.reasons[0].includes("charging isn't armed"),
+    "the offer names the certification gate it waits behind");
+
+  console.log("");
+} catch (e) {
+  console.log(`  ✗ Paid-conversion tests failed: ${e.message}`);
   testsFailed++;
   console.log("");
 }
