@@ -1,6 +1,6 @@
 # ConEd Rate Optimizer
 
-A single-page, **100% client-side** tool: upload your Con Edison "Download my data" (Green Button) CSV and see — precisely, for your real usage — whether switching ConEd rate plans would lower your bill. Nothing is uploaded; all computation happens in the browser.
+A single-page, **100% client-side** tool: upload your Con Edison "Download my data" (Green Button) CSV — or connect your account with **Green Button Connect (Share My Data)** — and see, precisely, for your real usage, whether switching ConEd rate plans would lower your bill. All computation happens in the browser; your usage data is never stored anywhere.
 
 **Live:** [coned.jedarden.com](https://coned.jedarden.com)
 
@@ -13,7 +13,7 @@ the month-over-month bill experience, is documented in
 
 ## What it does
 
-- Parses ConEd Green Button interval exports entirely in-browser — **CSV/TSV**, **XML (ESPI)**, or the **raw `.zip`** exactly as ConEd delivers it (see [Import formats](#import-formats--green-button-connect)).
+- Parses ConEd Green Button interval exports entirely in-browser — **CSV/TSV**, **XML (ESPI)**, or the **raw `.zip`** exactly as ConEd delivers it (see [Import formats](#import-formats--green-button-connect)) — and can **pull the same data straight from a connected ConEd account** via Green Button Connect (Share My Data), still analyzed entirely in-browser.
 - Prices your usage under **every currently-eligible SC1 residential plan**: Standard, Time-of-Use, and the demand-based Steady Use Rate (formerly the "Select Pricing Plan") and Smart Energy Plan.
 - Applies **ConEd's published eligibility, enrollment-timing, and lock-in rules** (see [Eligibility & lock-in rules](#eligibility--lock-in-rules)) to your declared situation — service area, current plan, meter, solar, ESCO supply, heat pump — and excludes plans that aren't valid alternatives for you, with the reason shown.
 - Shows the verdict (stay / switch + $), a ranked **plan-by-plan comparison** — each plan with its exact ConEd display name, pricing basis (energy vs demand), eligibility, switch terms, and the date its rates were last verified (demand-based plans are flagged as estimates) — plus your peak/off-peak load shape and a monthly bar chart.
@@ -28,6 +28,7 @@ All parsing happens in the browser (`public/calc.js`); files never leave the dev
 | `.zip` (what ConEd emails you) | Detected by magic bytes and unpacked in-page (`unzipCsv`, using `DecompressionStream`) — no need to unzip first. The first `.csv` or `.xml` inside is used. |
 | `.csv` / `.tsv` | The classic "Download my data" layout (`DATE`, `START TIME`, `USAGE` columns; delimiter auto-detected). |
 | `.xml` (ESPI) | Green Button ESPI Atom feeds, with or without a namespace prefix (`<espi:IntervalReading>` or `<IntervalReading>`); epoch timestamps are converted to America/New_York before pricing. Wh values and `powerOfTenMultiplier` scaling are handled. |
+| Connected ConEd account (Green Button Connect / Share My Data) | One-time OAuth authorization at coned.com, then interval **and billing** ESPI feeds are pulled from ConEd's API **directly into your browser** with your access token and parsed by the same in-browser `parseESPI()` — the analysis path is byte-for-byte the file path. Ships **disabled** (`configured: false`) until Con Edison's third-party onboarding issues real credentials; enabling is a `public/gbc-config.json` + env-binding change. The exact data-handling boundary — what the browser, the token-exchange function, ConEd, and the operators each see, process, retain, and log — is documented in [`docs/notes/gbc-data-boundary.md`](docs/notes/gbc-data-boundary.md). Verified end-to-end against a sandbox Third-Party App (`test/gbc-sandbox.js`, `tools/verify-gbc-browser.js`). |
 
 Malformed input fails with a specific, human-readable error (wrong export type, no
 interval data, corrupt/unsupported zip, XML with no readings) — never a raw stack trace.
@@ -55,15 +56,7 @@ plan (`requires`, `lockIn`, `solar`, `smartChargeConflict`), mirrored in `rates.
 they can be updated with no code change when ConEd's terms change. Excluded plans stay
 visible in the comparison with their reason — they're just never recommended.
 
-**Green Button Connect (account authorization) is not available in this tool.**
-Connecting directly to a ConEd account requires ConEd's third-party onboarding and
-data security agreement, an OAuth redirect endpoint, and data storage — all of which
-conflict with this prototype's 100% client-side, nothing-uploaded design. It is
-explicitly scoped as **Phase 2** of the paid product in
-[`docs/product-strategy.md`](docs/product-strategy.md) ("Data architecture"), where
-the consent and scope requirements are documented. This site never asks for your
-Con Edison password and never connects to your account; it only reads a file you
-downloaded yourself.
+**Green Button Connect (account authorization) is implemented — enabled once ConEd's third-party onboarding completes.** The flow (`public/gbc.js` + the `/api/gbc/token` Pages Function) does the full Share My Data authorization: link-out to ConEd's OAuth screen, CSRF-guarded callback, code→token exchange, then direct browser retrieval of interval and billing ESPI feeds, analyzed by the same in-browser engine as the file path. It resolves the tension with the nothing-uploaded promise the narrow way: **all computation stays in the browser**; the one server step (the token exchange, which needs the client secret) retains and logs nothing; the access token lives only in your tab's session storage and dies with it; your ConEd password is never asked for. The full boundary — what each component sees, processes, retains, and logs — is in [`docs/notes/gbc-data-boundary.md`](docs/notes/gbc-data-boundary.md). The connect panel stays hidden until ConEd's [third-party registration](https://www.coned.com/en/accounts-billing/share-energy-usage-data/become-a-third-party) (data security agreement, client credentials, real endpoint URLs) is done; persistent server-side monitoring remains **Phase 2** of the paid product in [`docs/product-strategy.md`](docs/product-strategy.md) and is deliberately not built here, because it would require storing customer data. Until onboarding lands, this site still never connects to your account; it only reads a file you downloaded yourself.
 
 ## Structure
 
@@ -73,18 +66,28 @@ public/            <- deploy this directory to Cloudflare Pages
   styles.css
   calc.js          <- pure calc core (parse + price); also runs under Node
   sample.js        <- built-in anonymized example (monthly aggregates only)
+  gbc.js           <- Green Button Connect client core (auth + feed walk); also runs under Node
+  gbc-config.json  <- GBC public config (ships configured:false until ConEd onboarding)
   app.js           <- DOM glue
   rates.json       <- live rate data overrides (optional)
   feedback.js      <- Agentation feedback toolbar (loads only with ?feedback=1)
+functions/
+  api/gbc/token.js <- Pages Function: OAuth code→token exchange; retains nothing, logs nothing
+docs/
+  notes/gbc-data-boundary.md <- the GBC data-handling boundary (who sees/keeps what)
 verify.js          <- Node verification script
 scripts/
   validate-rates.js         <- tariff data gate (docs/tariff-update-workflow.md)
-  definition-of-done.sh     <- gate + test suite + verify: run before every push
+  definition-of-done.sh     <- gate + test suite + sandbox + verify: run before every push
 tools/
   verify-agentation-mount.js <- browser check: toolbar mounts on ?feedback=1,
                                 nothing extra loads without it (needs playwright)
+  verify-gbc-browser.js      <- browser E2E: real Chromium through the full GBC
+                                authorization + import flow (needs playwright)
 test/              <- automated test suite and fixtures
-  test.js          <- automated tests for calc.js core
+  test.js          <- automated tests for calc.js core (+ GBC core, Test 17)
+  gbc-sandbox.js   <- sandbox Third-Party App authorization: mock OAuth server +
+                     ESPI Data Custodian driving the real gbc.js + Pages Function
   fixtures/
     sample-greenbutton.csv  <- sample data for testing
     sample-greenbutton.xml  <- same data as ESPI XML (epoch/Wh), for parseESPI tests

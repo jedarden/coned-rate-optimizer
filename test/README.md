@@ -4,9 +4,10 @@ This directory contains automated tests and fixtures for the ConEd Rate Optimize
 
 ## Files
 
-- `test/test.js` — Automated test suite for calc.js core functionality
+- `test/test.js` — Automated test suite for calc.js core functionality (and the Green Button Connect client core, Test 17)
+- `test/gbc-sandbox.js` — Sandbox Third-Party App authorization: a local mock OAuth 2.0 authorization server + ESPI Data Custodian driving the real `public/gbc.js` and the real Pages Function (`functions/api/gbc/token.js`) through the full Green Button Connect flow
 - `test/fixtures/sample-greenbutton.csv` — Sample Green Button CSV data for testing
-- `test/fixtures/sample-greenbutton.xml` — The same data as a Green Button ESPI Atom feed (epoch seconds in America/New_York, Wh values), for XML tests
+- `test/fixtures/sample-greenbutton.xml` — The same data as a Green Button ESPI Atom feed (epoch seconds in America/New_York, Wh values), for XML tests — also served by the GBC sandbox as the connected interval feed, so the connected path is checked byte-for-byte against the file path
 - `test/fixtures/bill-history-sc1-nyc.json` — ConEd's published NYC SC1 bill history (2023–2025, 300 kWh sample month), the ground truth the bill-reconstruction tests reproduce
 
 ## Running Tests
@@ -21,6 +22,13 @@ node test/test.js
 node verify.js
 # Or explicitly:
 node verify.js test/fixtures/sample-greenbutton.csv
+```
+
+### Run the Green Button Connect sandbox authorization
+```bash
+node test/gbc-sandbox.js
+# Mock OAuth 2.0 authorize/token + ESPI Data Custodian on 127.0.0.1 (ephemeral
+# port); the real Pages Function handles /api/gbc/token. Exits 0 on success.
 ```
 
 ### Run verification with your own data
@@ -48,6 +56,7 @@ The automated test suite covers:
 14. **Bill Reconstruction** — `reconstructBill()` prices a billing period component by component (customer charge, delivery, supply, MAC, RDM, surcharges) and reproduces ConEd's real published bill history to under half a cent at each year's rates; integrity guards re-derive the fixture's published totals; projection rules price uncovered years at the nearest published period and flag them; partial periods, actual-supply overrides, the default customer charge, and bad-input rejection are all covered
 15. **Reconciliation & Accuracy Gate** — `reconcileBill()` compares a modeled period against the actual bill (pass ≤2%, warn ≤5%, fail beyond), names the component driving each miss, and `accuracyGate()` enforces the product-strategy rule that an account is only trusted when ≥95% of its supported periods reconcile within 2% — every miss listed, never averaged away; a $0 actual bill and missing totals are handled without divide-by-zero
 16. **Demand-Plan Pricing** — `costDemand()` prices the Steady Use and Smart Energy schedules on hand-built interval data: the average of the three highest hourly demands per month at each plan's seasonal $/kW rates (summer vs winter), supply + surcharges held at the standard flat non-delivery rate, the customer charge per month, and the weekdays-noon–8pm peak window's edges (noon inclusive, 8pm exclusive, weekends never peak); an end-to-end flat-load analysis confirms the demand plans can win the ranking and that the verdict itself names Steady Use
+17. **Green Button Connect core** — the `public/gbc.js` client: public-config validation (missing file degrades to unconfigured; `configured:true` demands client id, authorize URL, API base, and scopes), the OAuth authorization-request shape (`response_type=code`, client id, registered redirect URI, state, joined scopes), callback validation (code+state accept, CSRF state-mismatch rejection, OAuth `error` mapping to friendly copy), the sessionStorage connection store (round-trip, the 30s expiry safety margin, clear), and the ESPI feed-walk helpers (entry-id extraction with namespace-prefix tolerance and feed-level ids excluded, resource-id from URI, path-template expansion with missing-id refusal) — the full authorization *flow* against a mock ConEd runs in `gbc-sandbox.js`
 
 ## Fixture Data
 

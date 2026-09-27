@@ -814,6 +814,100 @@ async function runFormatTests() {
   }
 }
 
+// Test 17: Green Button Connect client core — config handling, the OAuth
+// authorization request shape, callback/CSRF validation, the sessionStorage
+// connection store, and ESPI feed-walk helpers. The full authorization flow
+// (real Pages Function, mock ConEd) lives in test/gbc-sandbox.js.
+console.log("Test 17: Green Button Connect core");
+try {
+  const gbc = require("../public/gbc.js");
+  const shim = () => {
+    const m = {};
+    return {
+      setItem: (k, v) => { m[k] = String(v); },
+      getItem: (k) => (k in m ? m[k] : null),
+      removeItem: (k) => { delete m[k]; }
+    };
+  };
+  for (const fn of ["validateConfig", "loadConfig", "isConfigured", "randomState", "buildRedirectUri",
+    "authorizeUrl", "parseCallback", "friendlyError", "exchangeToken", "saveConnection", "loadConnection",
+    "clearConnection", "connectionIsFresh", "apiGet", "extractEntryIds", "connect", "refreshFeeds"]) {
+    assert(typeof gbc[fn] === "function", `exports ${fn}()`);
+  }
+
+  // config: missing file degrades to unconfigured; configured:true demands the lot
+  const throws = (fn, msg) => {
+    try { fn(); assert(false, msg + " (did not throw)"); }
+    catch (e) { assert(true, msg + ` — "${e.message.slice(0, 60)}"`); }
+  };
+  assert(gbc.validateConfig({}).configured === false, "missing config degrades to unconfigured");
+  throws(() => gbc.validateConfig({ configured: true }), "configured:true without credentials rejected");
+  const cfg = gbc.validateConfig({
+    configured: true, clientId: "cid", authorizeUrl: "https://coned.example/authorize",
+    apiBase: "https://api.example", scopes: ["FB=4_5_6"]
+  });
+  assert(cfg.configured === true, "complete config validates as configured");
+  assert(cfg.intervalFeedPath === gbc.DEFAULT_PATHS.intervalFeedPath,
+    "ESPI path templates default when the config omits them");
+
+  // authorization request
+  assert(/^[0-9a-f]{32}$/.test(gbc.randomState()), "randomState is 128-bit hex");
+  throws(() => gbc.authorizeUrl(gbc.validateConfig({}), "s", "r/"),
+    "authorizeUrl refuses an unconfigured deployment");
+  const aUrl = new URL(gbc.authorizeUrl(cfg, "st4te", "https://site.example/"));
+  assert(aUrl.searchParams.get("response_type") === "code", "authorize request is response_type=code");
+  assert(aUrl.searchParams.get("client_id") === "cid" &&
+    aUrl.searchParams.get("redirect_uri") === "https://site.example/" &&
+    aUrl.searchParams.get("state") === "st4te" &&
+    aUrl.searchParams.get("scope") === "FB=4_5_6",
+    "authorize request carries client_id, redirect_uri, state, scope");
+  assert(gbc.buildRedirectUri({ origin: "https://coned.jedarden.com" }) === "https://coned.jedarden.com/",
+    "redirect URI is the registered site root");
+
+  // callback validation (code/state/error; state mismatch = CSRF)
+  const cb = gbc.parseCallback("?code=c1&state=st4te", "st4te");
+  assert(cb.ok === true && cb.code === "c1", "valid callback accepted");
+  assert(gbc.parseCallback("?code=c1&state=zzz", "st4te").error === "state_mismatch",
+    "mismatched state rejected (CSRF guard)");
+  assert(gbc.parseCallback("?state=st4te", "st4te").error === "missing_code", "codeless callback rejected");
+  const denied = gbc.parseCallback("?error=access_denied", "st4te");
+  assert(denied.ok === false && denied.error === "access_denied", "OAuth error callback surfaced");
+  assert(/declined/.test(gbc.friendlyError(denied)), "OAuth errors map to friendly copy");
+
+  // connection store (sessionStorage shim) + freshness
+  const conn = { accessToken: "tok", tokenType: "Bearer", expiresAt: Date.now() + 3600e3 };
+  const s1 = shim();
+  gbc.saveConnection(conn, s1);
+  assert(gbc.loadConnection(s1).accessToken === "tok", "connection round-trips through the store");
+  assert(gbc.connectionIsFresh(conn, Date.now()), "fresh connection detected");
+  assert(!gbc.connectionIsFresh({ accessToken: "tok", expiresAt: Date.now() + 10e3 }, Date.now()),
+    "connection inside the 30s safety margin is not fresh");
+  gbc.clearConnection(s1);
+  assert(gbc.loadConnection(s1) === null, "clearConnection removes the stored connection");
+
+  // ESPI feed walk helpers
+  const miniFeed = `<feed xmlns="http://www.w3.org/2005/Atom">
+    <id>https://api.example/espi/1_1/resource/Subscription</id>
+    <entry><id>https://api.example/espi/1_1/resource/Subscription/77</id></entry>
+    <entry><espi:id>https://api.example/espi/1_1/resource/Subscription/78</espi:id></entry>
+  </feed>`;
+  const ids = gbc.extractEntryIds(miniFeed);
+  assert(ids.length === 2 && gbc.resourceIdOf(ids[0]) === "77",
+    "extractEntryIds takes entry ids only (feed id excluded), prefix-tolerant");
+  assert(gbc.resourceIdOf("https://api.example/x/UsagePoint/9") === "9", "resourceIdOf takes the last path segment");
+  assert(gbc.expandPath("/Subscription/{subscription}/UsagePoint", { subscription: "77" }) === "/Subscription/77/UsagePoint",
+    "expandPath substitutes ids into path templates");
+  throws(() => gbc.expandPath("/UsagePoint/{usagePoint}", {}), "expandPath refuses a missing id");
+  assert(JSON.stringify(gbc.parseCallback({}, "x")) === JSON.stringify({ ok: false, error: "missing_code", errorDescription: "no authorization code in the callback" }),
+    "object-form query (URLSearchParams-free callers) behaves like the string form");
+
+  console.log("");
+} catch (e) {
+  console.log(`  ✗ Green Button Connect core tests failed: ${e.message}`);
+  testsFailed++;
+  console.log("");
+}
+
 // Summary (printed after the async format tests finish)
 function printSummary() {
   console.log("Test Results:");

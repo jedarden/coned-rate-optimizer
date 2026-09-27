@@ -52,7 +52,7 @@
         "name": "Is my data private?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Completely. Everything runs in your browser — your usage file is never uploaded, stored, or sent anywhere. There's no server and no account."
+          "text": "Completely. Everything runs in your browser — your usage file is never uploaded, stored, or sent anywhere. There's no server and no account. If you use the optional \"Connect with ConEd\" (Green Button Connect) path, your usage still never leaves your device: it flows from Con Edison directly into your browser tab and is analyzed there, exactly like a file you downloaded. The only server contact is a one-time exchange of the authorization code for your access token (because the app's client secret can't live in a browser); that token is kept only in your tab's session storage — never stored, never logged — and disappears when you close the tab. Your ConEd password is never asked for."
         }
       }
     ]
@@ -64,7 +64,7 @@
     <header class="hero">
       <h1>Will switching your ConEd rate plan actually lower your bill?</h1>
       <p class="sub">Upload your Con Edison usage export and find out — precisely, for your real usage. Most people <em>don't</em> save, and we'll tell you honestly if that's you.</p>
-      <p class="privacy">🔒 Your data never leaves your device. All calculations run in your browser — nothing is uploaded, stored, or sent anywhere.</p>
+      <p class="privacy">🔒 Your usage data never leaves your device. All calculations run in your browser — nothing is uploaded, stored, or sent anywhere. (Connecting your ConEd account, when offered below, keeps the data flow ConEd → your browser too.)</p>
     </header>
 
     <section class="card" id="input-card">
@@ -78,6 +78,20 @@
       </div>
       <div class="or">or</div>
       <button id="sample-btn" class="btn">Try it with a sample home →</button>
+      <!-- Green Button Connect (Share My Data) — appears only when this
+           deployment is configured (public/gbc-config.json). The token lives
+           in this tab's sessionStorage; the boundary is documented in
+           docs/notes/gbc-data-boundary.md and summarized in the panel copy. -->
+      <div class="ev-option gbc-option" id="gbc-panel" hidden>
+        <strong id="gbc-title">Or connect your ConEd account directly</strong>
+        <p class="legend"><strong id="gbc-provider">Con Edison</strong>'s Green Button Connect (Share My Data): authorize once on coned.com and this tool pulls your interval (and billing) feeds straight into this page. Your usage data still never leaves your device — it flows from ConEd directly into your browser, and every calculation runs in this tab. The only server contact is a one-time exchange of the authorization code for your access token, which is kept in this tab and never stored or logged. Your ConEd password is never asked for. Closing this tab disconnects; you can revoke access any time from your ConEd account.</p>
+        <p id="gbc-status" class="legend gbc-status" hidden></p>
+        <div class="gbc-actions">
+          <button id="gbc-connect" class="btn" type="button" hidden>Connect with ConEd →</button>
+          <button id="gbc-refresh" class="btn" type="button" hidden>↻ Re-pull usage</button>
+          <button id="gbc-disconnect" class="btn btn-ghost" type="button" hidden>Disconnect</button>
+        </div>
+      </div>
       <div class="ev-option">
         <label for="ev-toggle"><input type="checkbox" id="ev-toggle" /> <strong>I charge an EV at home</strong></label>
         <p>Include SmartCharge NY’s published <strong>10¢/kWh</strong> incentive for charging midnight–8am in the Time-of-Use estimate. This is a what-if scenario: Con Edison currently says Residential Time-of-Use customers are not eligible for SmartCharge NY, so verify your eligibility before switching.</p>
@@ -122,7 +136,7 @@
           <li>Click <strong>Green Button “Download my data”</strong>, choose <strong>CSV</strong> or <strong>XML</strong> (both work), and pick the widest range (up to ~1 year for the most accurate result).</li>
           <li>ConEd emails/gives you a <strong>.zip</strong> — drop it here as-is, no need to unzip. It never leaves your device.</li>
         </ol>
-        <p class="legend">This tool reads only the file you download yourself. It never connects to your ConEd account and never asks for your utility password.</p>
+        <p class="legend">This tool reads only the file you download yourself, and it never asks for your utility password. Prefer not to download anything? The optional <strong>Connect with ConEd</strong> option above uses ConEd's official Green Button Connect authorization (Share My Data) to pull the same data into this page — same analysis, same privacy boundary, no password.</p>
       </details>
     </section>
 
@@ -140,7 +154,7 @@
       <h3>Can anyone switch between these plans?</h3>
       <p>Mostly, yes — but ConEd attaches real terms to each plan, and this tool applies them to your result: the <strong>Steady Use</strong> and <strong>Smart Energy</strong> plans require a <strong>smart meter</strong> (they bill on peak kW, which only hourly smart-meter data can show); <strong>Time-of-Use</strong> carries a <strong>one-year commitment</strong> (ESCO-supplied homes exempt) and an <strong>18-month wait</strong> before you can rejoin after leaving; both demand plans can be cancelled anytime but carry the same 18-month re-enrollment block; and ConEd <strong>steers solar / net-metering homes away</strong> from the demand plans. Switches take effect with a future meter read — typically 1–2 billing cycles.</p>
       <h3>Is my data private?</h3>
-      <p>Completely. Everything runs in your browser — your usage file is never uploaded, stored, or sent anywhere. There's no server and no account.</p>
+      <p>Completely. Everything runs in your browser — your usage file is never uploaded, stored, or sent anywhere. There's no server and no account. The optional <strong>Connect with ConEd</strong> (Green Button Connect) path keeps the same boundary: your usage flows from Con Edison directly into your browser tab and is analyzed there, exactly like a downloaded file. The only server contact is a one-time exchange of the authorization code for your access token — the app's client secret can't live in a browser — and that token is kept only in your tab's session storage, never stored or logged, gone when you close the tab. Your ConEd password is never asked for. The full data-handling boundary (what each component sees, processes, and retains) is documented in the repo under <code>docs/notes/gbc-data-boundary.md</code>.</p>
     </section>
 
     <footer class="foot">
@@ -157,6 +171,7 @@
 
   <script src="calc.js"></script>
   <script src="sample.js"></script>
+  <script src="gbc.js"></script>
   <script src="app.js" defer></script>
   <!-- Agentation visual-feedback toolbar (conedrat-341ced52): lazy-loaded
        only when ?feedback=1 is set, so normal visitors fetch no extra

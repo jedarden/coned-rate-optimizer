@@ -1,0 +1,10 @@
+{
+  "configured": false,
+  "_help": "Green Button Connect (Share My Data) public configuration. Fill this in AFTER Con Edison third-party onboarding issues a client id and publishes the authorize/Data-Custodian endpoints — until then the site ships with configured:false and the connect panel never appears. Only PUBLIC values belong here: the client secret never touches this file (it is a Cloudflare Pages env binding on the /api/gbc/token function; see docs/notes/gbc-data-boundary.md). Path templates default to the ESPI 1.1 resource shapes in public/gbc.js and are overridden here only if ConEd's Data Custodian deviates from them.",
+  "providerName": "Con Edison",
+  "clientId": "",
+  "authorizeUrl": "",
+  "apiBase": "",
+  "scopes": [],
+  "tokenExchangePath": "/api/gbc/token"
+}

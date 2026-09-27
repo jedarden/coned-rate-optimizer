@@ -304,4 +304,109 @@
       .then(function (j) { if (j) { C.applyRates(j); showVer(); stalenessWarning = checkStaleness(); } })
       .catch(function () {});
   }
+
+  // ---- Green Button Connect (Share My Data) -------------------------------
+  // Link-out authorization, callback handling, and feed retrieval. Pure logic
+  // lives in gbc.js (window.ConedGbc); analysis stays in calc.js. The token
+  // lives in this tab's sessionStorage only — boundary documented in
+  // docs/notes/gbc-data-boundary.md.
+  var G = window.ConedGbc;
+  var gbcCfg = null, gbcConn = null;
+
+  function gbcStatus(msg, cls) {
+    var el = $("gbc-status"); if (!el) return;
+    el.textContent = msg || "";
+    el.hidden = !msg;
+    el.className = "legend gbc-status" + (cls ? " " + cls : "");
+  }
+  function gbcBusy(b) {
+    ["gbc-connect", "gbc-refresh", "gbc-disconnect"].forEach(function (id) {
+      var el = $(id); if (el) el.disabled = b;
+    });
+  }
+  function gbcShowConnected(conn) {
+    var mins = Math.max(1, Math.round((conn.expiresAt - Date.now()) / 60000));
+    gbcStatus("Connected" + (conn.subscriptionId ? " · subscription " + conn.subscriptionId : "") +
+      " · authorization expires in ~" + mins + " min · it lives only in this tab.");
+    $("gbc-connect").hidden = true;
+    $("gbc-refresh").hidden = false;
+    $("gbc-disconnect").hidden = false;
+  }
+  function gbcReset() {
+    $("gbc-connect").hidden = false;
+    $("gbc-refresh").hidden = true;
+    $("gbc-disconnect").hidden = true;
+    gbcStatus("");
+  }
+  function gbcPull(conn) {
+    gbcConn = conn;
+    gbcBusy(true);
+    gbcStatus("Pulling your ConEd interval and billing feeds…", "busy");
+    G.refreshFeeds(gbcCfg, conn).then(function (res) {
+      gbcBusy(false);
+      gbcShowConnected(conn);
+      var label = "ConEd account · usage point " + res.usagePointId +
+        (res.billingEntries ? " · " + res.billingEntries + " billing summar" + (res.billingEntries === 1 ? "y" : "ies") + " retrieved" : "");
+      lastParsed = res.parsed;
+      lastLabel = label;
+      render(C.analyze(lastParsed, calcOptions()), label);
+    }).catch(function (e) {
+      gbcBusy(false);
+      gbcStatus(e.message, "bad");
+    });
+  }
+  function gbcStart() {
+    if (!gbcCfg) return;
+    try {
+      var state = G.randomState();
+      G.saveState(state);
+      location.href = G.authorizeUrl(gbcCfg, state, G.buildRedirectUri(location));
+    } catch (e) { gbcStatus(e.message, "bad"); }
+  }
+  function gbcDisconnect() {
+    G.clearConnection();
+    gbcConn = null;
+    gbcReset();
+    gbcStatus("Disconnected — the authorization token was removed from this tab. You can also revoke this app's access any time from your ConEd account's Share My Data settings.", "busy");
+  }
+  // Returns true if the URL carried an OAuth callback (consumed either way).
+  function gbcHandleCallback() {
+    var qs = new URLSearchParams(location.search);
+    if (!qs.has("code") && !qs.has("error")) return false;
+    var expected = G.loadState();
+    var cb = G.parseCallback(qs, expected);
+    try { history.replaceState(null, "", location.pathname); } catch (e) { /* keep the query */ }
+    if (!cb.ok) { gbcStatus(G.friendlyError(cb), "bad"); return true; }
+    gbcBusy(true);
+    gbcStatus("Exchanging your ConEd authorization for an access token…", "busy");
+    G.connect(gbcCfg, cb.code, G.buildRedirectUri(location)).then(function (conn) {
+      gbcPull(conn);
+    }).catch(function (e) {
+      gbcBusy(false);
+      gbcStatus(e.message, "bad");
+    });
+    return true;
+  }
+  if (G) {
+    G.loadConfig().then(function (cfg) {
+      gbcCfg = cfg;
+      if (!G.isConfigured(cfg)) return;          // feature off — panel stays hidden
+      var panel = $("gbc-panel");
+      if (!panel) return;
+      panel.hidden = false;
+      if ($("gbc-provider")) $("gbc-provider").textContent = cfg.providerName;
+      $("gbc-connect").addEventListener("click", gbcStart);
+      $("gbc-refresh").addEventListener("click", function () { if (gbcConn) gbcPull(gbcConn); });
+      $("gbc-disconnect").addEventListener("click", gbcDisconnect);
+      if (gbcHandleCallback()) return;
+      var saved = G.loadConnection();
+      if (saved && G.connectionIsFresh(saved)) {
+        gbcConn = saved;
+        gbcShowConnected(saved);
+      } else if (saved) {
+        G.clearConnection();                     // stale token — drop it
+        gbcReset();
+      }
+    }).catch(function () { /* GBC unavailable — file import still works */ });
+  }
 })();
