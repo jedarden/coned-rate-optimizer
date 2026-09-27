@@ -75,10 +75,14 @@ public/            <- deploy this directory to Cloudflare Pages
   sample.js        <- built-in anonymized example (monthly aggregates only)
   app.js           <- DOM glue
   rates.json       <- live rate data overrides (optional)
+  feedback.js      <- Agentation feedback toolbar (loads only with ?feedback=1)
 verify.js          <- Node verification script
 scripts/
   validate-rates.js         <- tariff data gate (docs/tariff-update-workflow.md)
   definition-of-done.sh     <- gate + test suite + verify: run before every push
+tools/
+  verify-agentation-mount.js <- browser check: toolbar mounts on ?feedback=1,
+                                nothing extra loads without it (needs playwright)
 test/              <- automated test suite and fixtures
   test.js          <- automated tests for calc.js core
   fixtures/
@@ -89,6 +93,25 @@ test/              <- automated test suite and fixtures
 ## Run locally
 
 Any static server, e.g. `python3 -m http.server -d public 8000` → http://localhost:8000
+
+## Feedback toolbar
+
+The Agentation visual-feedback toolbar (click elements / select text to copy
+structured feedback markdown) is wired on the page but **lazy-loaded only
+when `?feedback=1` is in the URL** — the footer's "feedback toolbar" link, or
+any link with that param. Normal visitors fetch nothing extra: no React, no
+third-party CDN request, no toolbar — so the nothing-uploaded privacy promise
+is unchanged for them. Agentation itself makes no network calls; it renders
+locally and copies feedback text to your clipboard. The mount is verified by
+`#agentation-root` existing after load (never by grepping for the script
+tag):
+
+```bash
+python3 -m http.server -d public 8000 &
+NODE_PATH=/home/coding/spaxel/dashboard/node_modules \
+  node tools/verify-agentation-mount.js            # local
+node tools/verify-agentation-mount.js https://coned.jedarden.com   # production
+```
 
 ## Test the calc.js core
 

@@ -151,12 +151,24 @@
         <p id="sources"></p>
         <p class="disclaimer">Estimate only. Not affiliated with Con Edison. Verify against your actual bill before switching.</p>
       </details>
-      <p class="ver">ConEd Rate Optimizer · <span id="version">—</span> · <small>Privacy-safe visit analytics via Cloudflare</small></p>
+      <p class="ver">ConEd Rate Optimizer · <span id="version">—</span> · <a href="?feedback=1">feedback toolbar</a> · <small>Privacy-safe visit analytics via Cloudflare</small></p>
     </footer>
   </main>
 
   <script src="calc.js"></script>
   <script src="sample.js"></script>
   <script src="app.js" defer></script>
+  <!-- Agentation visual-feedback toolbar (conedrat-341ced52): lazy-loaded
+       only when ?feedback=1 is set, so normal visitors fetch no extra
+       payload and the no-upload privacy promise is untouched. Verified by
+       #agentation-root existing after load in that mode
+       (tools/verify-agentation-mount.js). -->
+  <script type="module">
+    if (new URLSearchParams(location.search).has("feedback")) {
+      import("./feedback.js").catch((e) =>
+        console.error("[feedback] load failed:", e)
+      );
+    }
+  </script>
 </body>
 </html>
