@@ -76,6 +76,9 @@ public/            <- deploy this directory to Cloudflare Pages
   app.js           <- DOM glue
   rates.json       <- live rate data overrides (optional)
 verify.js          <- Node verification script
+scripts/
+  validate-rates.js         <- tariff data gate (docs/tariff-update-workflow.md)
+  definition-of-done.sh     <- gate + test suite + verify: run before every push
 test/              <- automated test suite and fixtures
   test.js          <- automated tests for calc.js core
   fixtures/
@@ -109,4 +112,4 @@ node verify.js ~/path/to/your/green-button-export.csv
 
 ## Rate model & caveats
 
-Standard components are ConEd's **published 2025 SC1 NYC average**, grossed up for GRT + sales tax, excluding the fixed customer charge; TOU supply rates are ConEd's **current published residential TOU supply**. Absolute totals are ±~5% (the monthly Market Supply Charge varies; 2026 months are priced at 2025 rates). Assumes delivery/MAC/RDM/surcharges are identical under both plans and folds super-peak into peak. **Estimate only; not affiliated with Con Edison.** Update the constants in `public/calc.js` (`RATES`) when ConEd rates change.
+Standard components are ConEd's **published 2025 SC1 NYC average**, grossed up for GRT + sales tax, excluding the fixed customer charge; TOU supply rates are ConEd's **current published residential TOU supply**. Absolute totals are ±~5% (the monthly Market Supply Charge varies; 2026 months are priced at 2025 rates). Assumes delivery/MAC/RDM/surcharges are identical under both plans and folds super-peak into peak. **Estimate only; not affiliated with Con Edison.** When ConEd rates change, follow the authoritative update workflow in [`docs/tariff-update-workflow.md`](docs/tariff-update-workflow.md): update `rates.json` and the `RATES` defaults in `public/calc.js` together from a named ConEd publication, and let `scripts/definition-of-done.sh` (which runs the tariff data gate, `scripts/validate-rates.js`) stand between the edit and production — it fails the build on missing/inconsistent plan data, unit slips, effective-period gaps, or a stale `reviewedThrough` verification date.

@@ -201,3 +201,79 @@ coned.com itself Akamai-blocks every fetch path from this environment.
   to a dedicated EV rate while this repo's FAQ calls EVTOU commercial-only;
   reconcile when coned.com is reachable again. Agentation on this page is
   tracked separately (conedrat-341ced52).
+
+## ADR-003: 2026-09-27 — Tariff updates as a gated workflow: `validate-rates.js` in the definition of done, `docs/tariff-update-workflow.md` as the authority
+
+### Context
+
+`rates.json` is the tool's whole tariff store, and until now updating it was
+tribal knowledge scattered across comments: the README said "update the
+constants in `public/calc.js` (`RATES`) when ConEd rates change" (which predates
+the rates.json override path), the rates.json `_comment` said "edit + redeploy"
+(which predates push-to-deploy, where a push *is* the redeploy), and the only
+freshness mechanism was `app.js`'s 6-month UI banner — which tells the *user*
+the data may be stale after it has already shipped. Nothing stood between a
+tariff edit and production except the calc-core test suite, which asserts
+behavior, not data quality: a plan dropped from rates.json, a cents-as-dollars
+unit slip, a `standard.*` update without the matching `bill.periods` year, or a
+rule tweak applied to one file but not its mirror would all ship green. The
+failure modes are real for this repo specifically because the data has two
+copies (rates.json + baked-in calc.js defaults) that must agree, and because
+`standard` and `bill.periods` come from the same ConEd PDF and must move
+together.
+
+### Decision
+
+1. **`docs/tariff-update-workflow.md` is the single authority** for tariff
+   changes: sources (publication + Wayback snapshot date, since coned.com
+   blocks direct fetches), the full rates.json schema, the four layers of
+   effective-period handling (verification horizon / per-plan `ratesAsOf` /
+   billing-year periods with the `projected` rule / seasonality split between
+   engine config and data), the release process (both files in one commit,
+   version bump, push-to-deploy, post-deploy fetch of the live rates.json,
+   rollback by revert), and the quarterly re-verification cadence.
+2. **`scripts/validate-rates.js` is the mechanical gate** — schema, units,
+   cross-field consistency, effective-period coverage, `reviewedThrough`
+   freshness (warn at 4 months, fail at 6, `--allow-stale` to ship knowingly),
+   and mirror discipline against the calc.js defaults. It ships with an 18-case
+   `--self-test` that mutates a known-good copy and asserts each defect is
+   caught, so the gate cannot silently rot.
+3. **The gate joins the definition of done** (`scripts/definition-of-done.sh`),
+   ahead of the test suite. That is the enforcement point workers, humans, and
+   the NEEDLE close-verification all already run — no new CI surface needed for
+   a repo whose deploy pipeline lives in `declarative-config`.
+
+### Alternatives Considered
+
+1. **Documentation only** (write the workflow down, no code). Rejected: the
+   drift-check lesson from ADR-001 applies — a documented checklist that
+   nothing enforces is exactly how the manual-wrangler deploys happened.
+2. **Enforce in the `website-build` workflow template** (run the gate in CI
+   before `wrangler pages deploy`). Rejected for now: the template lives in
+   `declarative-config` and is shared by every jedarden.com property, so
+   per-repo gate logic there couples repos; the definition of done already runs
+   on every path to `main` for this repo. Revisit only if pushes start
+   bypassing it.
+3. **Scheduled CronWorkflow re-verifying rates against coned.com**. Rejected:
+   coned.com Akamai-blocks this environment (ADR-002), so automated
+   verification would be a scrape that never works or, worse, half-works;
+   quarterly human/agent re-verification against archived snapshots is
+   honest about what is checkable.
+
+### Consequences
+
+- **Positive**: the data-quality failure modes above (missing plan, unit slip,
+  standard/bill-history divergence, one-sided mirror edit, stale
+  `reviewedThrough`) now fail loudly before deploy; freshness policy is one
+  field (`reviewedThrough`) read identically by the gate, the UI banner, and
+  this doc; the validator tests itself, so the gate's own regressions are
+  caught by the same definition of done.
+- **Negative / cost**: one more script to keep in sync with the schema when
+  rates.json legitimately grows (new plan, new field) — the self-test makes
+  that change explicit rather than accidental; the 6-month staleness gate can
+  block an unrelated merge if the quarterly re-verification lapses, which is
+  by design (it should be loud).
+- **Follow-up**: when Phase 2 introduces versioned effective-date tariff
+  storage (`docs/product-strategy.md`, technical gap #1), this gate becomes the
+  ingestion validation for that store rather than going away.
+

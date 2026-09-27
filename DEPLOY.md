@@ -50,7 +50,7 @@ git add pages.tf dns.tf && git commit -m "feat(cloudflare): coned.jedarden.com P
 
 ## Step 2 — deploy the site content
 
-**Push-to-deploy** is wired via the `website-build` Argo WorkflowTemplate (see `docs/plan/plan.md` ADR-001). Every push to `main` auto-deploys to https://coned.jedarden.com.
+**Push-to-deploy** is wired via the `website-build` Argo WorkflowTemplate (see `docs/plan/plan.md` ADR-001). Every push to `main` auto-deploys to https://coned.jedarden.com. Tariff/rates changes are just such a push — but they must first pass the tariff data gate per [`docs/tariff-update-workflow.md`](docs/tariff-update-workflow.md) (run `scripts/definition-of-done.sh`; a red gate means fix `rates.json`/`calc.js` before pushing).
 
 ### Break-glass only: direct wrangler deploy
 

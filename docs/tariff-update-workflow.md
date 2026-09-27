@@ -1,0 +1,286 @@
+# Tariff update workflow — the authoritative process for `rates.json` and rate changes
+
+This document is the single authority for how tariff data enters, lives in, and
+ships from this repo. Every change to `public/rates.json`, to the baked-in
+`RATES` defaults in `public/calc.js`, or to any ConEd rate/eligibility number
+the tool displays goes through this workflow. The mechanical half of it is
+`scripts/validate-rates.js` (the "gate"), which runs as part of
+`scripts/definition-of-done.sh` — a change that fails the gate does not deploy.
+
+Started 2026-09-27 (bead `conedrat-cd9785f1`); decision recorded as
+[ADR-003](../docs/plan/plan.md) in `docs/plan/plan.md`.
+
+## 1. What carries the tariff data, and who wins
+
+There are exactly two places tariff data lives, and they must agree:
+
+| File | Role |
+|---|---|
+| `public/rates.json` | The **runtime tariff data file**. `app.js` fetches it (`cache: "no-store"`) on every page load and merges it over the defaults via `calc.applyRates()` — this is the "update rates with no code change" path. |
+| `public/calc.js` → `RATES` | The **baked-in defaults**. Used as-is if the `rates.json` fetch fails (file:// local runs, `verify.js` before it loads the override, a broken deploy). |
+
+Merge semantics (`applyRates`): a **deep merge** — objects merge key-by-key,
+arrays and scalars replace wholesale. Derived fields (`RATES._nonDelivery`,
+`RATES.tou.nonCommodity`) are recomputed after every merge, so a `standard.*`
+override cannot leave them stale. `RATES.meta` fields rates.json omits (e.g.
+`version`, `caveats`, `sources`) survive from calc.js.
+
+**The mirror rule:** rule/provenance data (`name`, `short`, `formerly`,
+`basis`, `eligibility`, `ratesAsOf`, `source`, `requires`, `lockIn`, `solar`,
+`smartChargeConflict`) must be **byte-identical in both files** — the
+eligibility engine and the test suite's mirroring tests depend on it. Numeric
+tariff values may diverge (that is the override mechanism working), but
+divergence is always flagged by the gate so it stays a decision, never an
+accident. In practice a tariff release updates **both files in one commit**
+(§6).
+
+Engine configuration that is *not* tariff data stays out of rates.json:
+`peakStartHour`, `summerMonths`, the demand plans' `peakStart`/`peakEnd`, and
+the eligibility engine itself. ConEd's peak *windows* are tariff facts and live
+in the plan data (`peakWindow` strings); which hours the engine treats as peak
+is code.
+
+## 2. Sources — what is authoritative
+
+Every plan carries a `source` URL (required, `https://`, gate-enforced) naming
+the ConEd publication its numbers come from. These are the publications, and
+nothing else is a valid source for a number:
+
+| Publication | Feeds | Cadence |
+|---|---|---|
+| [Historical Average Full Service Electric Rates PDF](https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf) (NYC Residential SC 1) | `standard.*` (latest year's average, grossed up for GRT + sales tax) and `bill.periods[]` (the per-year component history). **One publication, two sections — they move together** (gate-enforced). | Annual (published on a lag; 2026 averages arrived mid-2026 for the 2025 year) |
+| [Time-of-Use page](https://www.coned.com/en/accounts-billing/your-bill/time-of-use) | `tou.offPeak` / `peakSummer` / `peakWinter` (residential TOU supply), `tou.gross`, `tou.customer`, the TOU lock-in terms | Checked at least quarterly |
+| [Steady Use Rate page](https://www.coned.com/en/accounts-billing/steady-use-rate) | `steadyUse.demand.*` ($/kW delivery), `customer`, lock-in terms, solar caution | Checked at least quarterly |
+| [Smart Energy Plan page](https://www.coned.com/en/accounts-billing/smart-energy-plan) | `smartEnergy.demand.*`, `customer`, lock-in terms, solar guidance | Checked at least quarterly |
+| [EV rewards page](https://www.coned.com/en/save-money/rebates-incentives-tax-credits/rebates-incentives-tax-credits-for-residential-customers/electric-vehicle-rewards) | `smartChargeNY.offPeakCredit`, `offPeakWindow`, eligibility wording | Checked at least quarterly |
+
+**Fetching discipline:** coned.com Akamai-blocks fetches from this
+environment (verified in ADR-002). Verify against **Wayback Machine snapshots**
+of the pages, and record the snapshot date in the commit message and in the
+plan's `ratesAsOf` string (existing convention: "TOU page archived 2026-06-17,
+Steady Use 2026-07-03, Smart Energy 2026-05-20"). A number whose provenance
+cannot be named — publication + snapshot date — does not ship.
+
+Units: energy rates are **$/kWh expressed in dollars** (`0.338267`, never
+`33.8267`), demand rates are **$/kW**, customer charges are **$/month**. The
+gate sanity-checks all three ranges because a cents-as-dollars slip is the
+classic failure here.
+
+## 3. Schema — `rates.json` field reference
+
+Top level: `_comment` (what the file is), `meta`, `standard`, `tou`,
+`smartChargeNY`, `steadyUse`, `smartEnergy`, `bill`, `accuracy`. Unknown
+top-level keys are rejected by the gate (a plan rates.json invents is a plan
+the engine silently ignores — worse than a missing one).
+
+### `meta`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `reviewedThrough` | `YYYY-MM-DD` | **The freshness anchor**: the date through which every rate, term, and quote in the file has been verified against its source. The single field both the UI staleness banner and the deploy gate read. |
+| `asOf` | string | Human-readable summary of what the rates are current as of. Mirrors calc.js `meta.asOf`. |
+| `switchTiming` | string | The meter-read switch-timing note shown in the UI. Mirrors calc.js. |
+| `version` | optional `X.Y.Z` | If present it overrides calc.js `meta.version` at runtime — keep them equal; the gate warns on divergence. |
+
+### Priced plans — common fields (`standard`, `tou`, `steadyUse`, `smartEnergy`)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` / `short` | string | ConEd's exact display name + the UI short label. `formerly` on Steady Use carries its old name ("Select Pricing Plan"). |
+| `basis` | `"energy"` \| `"demand"` | How the plan bills: total kWh, or peak kW from interval data. Selects the pricing path in calc.js. |
+| `eligibility` | string | Who the plan is open to, in ConEd's terms. |
+| `ratesAsOf` | string | Per-plan currency statement ("delivery $/kW rates current as of 2026-07"). Shown verbatim in the plan comparison. |
+| `source` | https URL | The publication above this plan's numbers come from. |
+| `requires` | object | Eligibility-engine facts: `serviceClass: "SC1"` always; `meter: "smart"` on both demand plans. |
+| `lockIn` | object \| `null` | Published commitment terms: `minStayMonths`, `reenrollBlockMonths`, `escoExempt`, `cancelAnytime`, `note`. `null` only for Standard (the default rate every plan can return to). |
+| `solar`, `smartChargeConflict` | string | ConEd's fit guidance / program conflicts, quoted or tightly tracked from ConEd wording — surfaced as advisory notes, never invented. |
+| `customer` | $/month | Monthly customer charge. |
+
+Plan-specific rate fields:
+
+| Plan | Fields |
+|---|---|
+| `standard` (energy) | `allIn`, `commodity`, `delivery` ($/kWh) — `allIn` folds in the cents-scale MAC/RDM/surcharge adjustments on top of delivery + commodity, and is the value the bill-history tie check anchors to |
+| `tou` (energy) | `offPeak`, `peakSummer`, `peakWinter` ($/kWh supply), `gross` (gross-up multiplier, 1–1.5) — **no** `allIn`/`commodity`/`delivery`: the non-commodity side derives from `standard` (`nonCommodity = standard.allIn − standard.commodity`), so a standard override automatically re-prices TOU's delivery side |
+| `steadyUse`, `smartEnergy` (demand) | `demand.peakSummer`, `demand.peakWinter`, `demand.off` ($/kW delivery), `peakWindow` |
+
+### `smartChargeNY` (what-if incentive, not a priced plan)
+
+`offPeakCredit` ($/kWh, ≤ 1), `offPeakWindow`, `eligibility`, `ratesAsOf`,
+`source`. It has no `basis`, no `requires`, no `lockIn`.
+
+### `bill` — the effective-period table
+
+| Field | Meaning |
+|---|---|
+| `basis`, `source` | The publication the history comes from (same PDF as `standard`). |
+| `periods[]` | One entry per published billing year, **strictly increasing by year**: `{ year, delivery, commodity, mac, rdm, surcharges }` ($/kWh; `rdm` may be negative — it was in 2023). |
+
+### `accuracy`
+
+`passPct` (2), `warnPct` (5), `gateFraction` (0.95) — the bill-reconstruction
+accuracy policy from `docs/product-strategy.md`. `passPct < warnPct` and
+`0 < gateFraction ≤ 1`, gate-enforced.
+
+## 4. Effective-period handling
+
+Tariff time is handled at four distinct layers; do not blur them:
+
+1. **Verification horizon** — `meta.reviewedThrough` (a date you verified, not
+   a date ConEd published). Every freshness mechanism reads this one field
+   (§5).
+2. **Per-plan currency** — `ratesAsOf` strings, shown to users verbatim in the
+   plan comparison ("delivery $/kW rates current as of 2026-07"). These are
+   prose, deliberately: ConEd publishes different components on different
+   lags, and a single date would claim more consistency than exists.
+3. **Billing-year periods** — `bill.periods[]`, keyed by calendar year. A
+   usage year with no period prices at the **latest prior year** and
+   `reconstructBill` flags the result `projected` — this is exactly how "2026
+   usage priced at 2025 rates" works today, and the first `meta` caveat says
+   so. Gaps are allowed (2023→2025 with 2024 missing is valid, if unfortunate);
+   years must increase; the latest period must tie to `standard.*` because
+   they are the same publication (gate-enforced).
+4. **Seasonality** — *which months are summer* is engine config
+   (`summerMonths = [6,7,8,9]` in calc.js, matching ConEd's Jun–Sep TOU
+   season); *what each season costs* is data (`peakSummer`/`peakWinter` on TOU
+   and both demand plans). A tariff change that moves the season boundary is a
+   code change plus a data change, reviewed together.
+
+**Adding a newly published year** (the annual refresh): append the year to
+`bill.periods[]` and update `standard.*` from the same PDF, in the same
+change — the gate fails one without the other. Bump `meta.reviewedThrough` to
+the verification date and refresh the `ratesAsOf` strings of anything else you
+re-verified in the same pass.
+
+## 5. Validation & freshness — the gate
+
+`node scripts/validate-rates.js` is the mechanical pre-deploy gate. It is
+wired into `scripts/definition-of-done.sh` (after self-test, before the test
+suite — a schema-broken rates.json would otherwise fail the suite with
+misleading errors), so it runs for every worker, every NEEDLE close
+verification, and any human running the definition of done. The deploy itself
+is push-to-deploy (§6), so **the gate is the thing that stands between a
+tariff edit and production**.
+
+It is pure (no network, no clock — `now` is injected) and has two modes:
+the **gate** (`validate-rates.js`, exits 1 on any error) and the
+**self-test** (`--self-test`, mutates a known-good copy 18 ways and asserts
+each defect is caught — the validator testing itself, shipped with itself).
+
+**Errors (block deploy):**
+
+- JSON unparseable; missing `_comment`; unknown top-level key; missing plan.
+- `meta.reviewedThrough` missing/malformed, or **≥ 6 months old** (unless
+  `--allow-stale`); `meta.asOf`/`switchTiming` missing; calc.js `meta.version`
+  not semver / `meta.updated` not `YYYY-MM`.
+- Plan metadata missing (`name`/`short`/`basis`/`eligibility`/`ratesAsOf`/
+  `source`), non-https source, `requires.serviceClass ≠ SC1`.
+- Rate fields: missing or non-positive numbers for the plan's basis; values
+  outside plausible ranges (all-in 0.05–2 $/kWh, demand 0.5–150 $/kW, credit
+  ≤ 1 $/kWh); `tou.gross` outside 1–1.5; TOU seasonal ordering
+  `offPeak ≤ peakWinter ≤ peakSummer` and demand ordering
+  `peakSummer ≥ peakWinter ≥ off` violated; TOU carrying flat-rate fields it
+  must not have.
+- Cross-field: `standard.allIn` more than 0.05 $/kWh away from
+  `delivery + commodity` (only MAC/RDM/surcharges may sit between); latest
+  `bill.periods` year not tying to `standard.allIn`/`commodity` (±0.001);
+  `accuracy.passPct ≥ warnPct` or `gateFraction` outside (0, 1].
+- **Mirror discipline:** any rule/provenance field (`name`, `requires`,
+  `lockIn`, `solar`, `smartChargeConflict`, `ratesAsOf`, …) differing between
+  rates.json and the calc.js defaults.
+
+**Warnings (print, do not block):**
+
+- **Freshness:** `reviewedThrough` ≥ 4 months old; no `bill.periods` entry for
+  the current year (current-year usage is being priced `projected` — ConEd
+  publishes on a lag, so this is normal most of the year, but it must be seen
+  and the caveat kept, not slept through).
+- **Numeric divergence** between rates.json and calc.js defaults (the override
+  path working — flagged so both sides get mirrored in the same release).
+- `meta.version` / wording divergence between the two files.
+
+`--allow-stale` exists for exactly one case: knowingly shipping data the UI
+banner will label "may be out of date" (e.g. re-deploying an old release). The
+warning it prints says so on the record.
+
+**Runtime detection (last line of defense):** `app.js` `checkStaleness()`
+shows a banner past 6 months ("may be out of date; treat as directional"),
+`verify.js` warns on rates.json/calc.js drift, and the test suite asserts the
+rule mirroring (tests 10 & 13). The gate catches these **before** deploy; the
+UI banner is what a user sees if something ships stale anyway.
+
+| Failure mode | Detected by | When |
+|---|---|---|
+| Missing plan / field / bad units / broken consistency | `validate-rates.js` errors | pre-deploy gate |
+| Latest published year not reflected in both `standard.*` and `bill.periods` | gate tie check | pre-deploy gate |
+| Stale verification (> 6 months) | gate error; `checkStaleness()` banner | gate, then UI |
+| Current year priced `projected` | gate warning + meta caveat | gate, then UI |
+| rates.json / calc.js divergence (rules) | gate error; tests 10 & 13 | gate + test suite |
+| rates.json / calc.js divergence (numbers) | gate warning; `verify.js` drift warning | gate + verify |
+| Regressed validator itself | `--self-test` in definition of done | every run |
+
+## 6. Release process
+
+The site deploys **push-to-deploy**: every push to `main` triggers the
+`website-build` Argo WorkflowTemplate, which publishes `public/` to Cloudflare
+Pages (coned.jedarden.com) — ADR-001. There is no separate "deploy rates"
+step; **a tariff release is an ordinary commit to `main` that passes the
+gate.** Work directly on `main` (no branches); stage precise paths.
+
+1. **Verify the source.** Pull the authoritative publication (§2) — for coned.com
+   pages, via a fresh Wayback snapshot; record its date. If a fetched number
+   can't be tied to publication + snapshot date, stop.
+2. **Edit `public/rates.json`** — the new values, the touched plans'
+   `ratesAsOf` strings, and `meta.reviewedThrough` = today's verification
+   date. Adding a published year: §4's annual-refresh step.
+3. **Mirror `public/calc.js` `RATES`** with the same values. Rule/provenance
+   fields must match byte-for-byte; numeric divergence between the files is
+   allowed by the merge design but must not survive a release — a user whose
+   `rates.json` fetch fails must see the same numbers as one whose fetch
+   succeeds.
+4. **Bump the release markers** in calc.js `meta`: `version` (semver; tariff
+   data refresh = patch or minor per judgment, engine behavior change = minor),
+   `updated` (`YYYY-MM`), and refresh `meta.asOf` if the summary prose is now
+   stale. If ConEd's *terms* (not numbers) changed, quote the new wording in
+   the `lockIn`/`solar`/`smartChargeConflict` notes in **both** files.
+5. **Run the gate and the suite:** `scripts/definition-of-done.sh` —
+   self-test, gate, `node test/test.js`, `node verify.js`. Green only, and
+   read the warnings: a stale-data or numeric-divergence warning at this point
+   means step 2–3 was incomplete.
+6. **Commit both files in one commit** (plus any doc/test updates the change
+   requires), message naming the source and snapshot date, e.g.
+   `feat(rates): 2026 published SC1 averages (historical-averages PDF archived 2026-07-14)`.
+   The owning bead records the change (repo rule: every change is covered by a
+   bead; deployment verification lands on that bead before it closes).
+7. **Push to `origin`** (Forgejo). Push-to-deploy fires; watch the
+   `website-build` workflow on `iad-ci`
+   (`kubectl --server=http://traefik-iad-ci:8001 get workflows -n argo-workflows`).
+8. **Post-deploy verification:** fetch
+   `https://coned.jedarden.com/rates.json` and confirm the new
+   `reviewedThrough`/version is what production serves, and that
+   `https://coned.jedarden.com` loads with the expected plan comparison.
+   Record the verification on the bead.
+9. **Rollback** = `git revert` of the release commit + push; Pages redeploys
+   the reverted tree. Do not hand-edit production (break-glass `wrangler pages
+   deploy` in `DEPLOY.md` is for pipeline outages only and leaves the next
+   push to reconcile).
+
+**Quarterly re-verification** is the standing cadence: even with no known
+change, re-check every source (§2), confirm `reviewedThrough` is inside the
+4-month warning line, and ship the (usually no-op) verification bump. This is
+what keeps the 6-month gate from ever firing in anger.
+
+## 7. What this workflow deliberately does *not* do
+
+- **No scraping.** ConEd blocks it and a silent scrape could publish numbers
+  no human has seen. Updates are human/agent-verified against an archived
+  publication, every time.
+- **No server-side tariff store.** The tool is 100% client-side by design
+  (README); rates.json ships as a static file. Versioned effective-date rate
+  data in a database is a Phase-2 paid-product need (`docs/product-strategy.md`,
+  technical gap #1) — until then this file *is* the versioned store, and git
+  history is its audit trail.
+- **No silent projection.** Pricing a current year at the latest published
+  year is legitimate and disclosed (`projected` flag + caveat), but the gate
+  keeps it visible so "temporary" never becomes permanent without a human
+  reading the warning.
