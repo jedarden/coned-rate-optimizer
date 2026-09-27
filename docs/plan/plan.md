@@ -235,7 +235,11 @@ together.
 2. **`scripts/validate-rates.js` is the mechanical gate** — schema, units,
    cross-field consistency, effective-period coverage, `reviewedThrough`
    freshness (warn at 4 months, fail at 6, `--allow-stale` to ship knowingly),
-   and mirror discipline against the calc.js defaults. It ships with an 18-case
+   per-source re-verification cadence — each plan's `ratesAsOf` measured
+   against its publication's window, parsed from the workflow doc's §2 source
+   table so gate and doc cannot drift (95 days for the quarterly pages,
+   13 months for the annual PDF; warn at ⅔ of each window) — and mirror
+   discipline against the calc.js defaults. It ships with a 24-case
    `--self-test` that mutates a known-good copy and asserts each defect is
    caught, so the gate cannot silently rot.
 3. **The gate joins the definition of done** (`scripts/definition-of-done.sh`),

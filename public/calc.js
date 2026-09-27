@@ -38,7 +38,7 @@
     standard: {
       name: "Standard Residential", short: "Standard", basis: "energy",
       eligibility: "every SC1 residential customer (the default rate)",
-      ratesAsOf: "2025 published SC1 NYC averages (2026 usage priced at 2025 rates)",
+      ratesAsOf: "2025 published SC1 NYC averages (2026 usage priced at 2025 rates); PDF verified 2026-07",
       source: "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
       requires: { serviceClass: "SC1" },
       lockIn: null,   // the default rate — no commitment, and every other plan can switch back to it

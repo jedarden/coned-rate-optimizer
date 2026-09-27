@@ -2,12 +2,15 @@
    update workflow (docs/tariff-update-workflow.md).
 
    Validates the tariff data file itself (schema, units, cross-field
-   consistency, effective-period coverage, freshness of meta.reviewedThrough)
-   and its mirror discipline against the defaults baked into public/calc.js.
+   consistency, effective-period coverage, freshness of meta.reviewedThrough
+   and of each plan's own ratesAsOf against its source's re-verification
+   cadence — read from the workflow doc's §2 source table at run time, so gate
+   and doc cannot drift) and its mirror discipline against the defaults baked
+   into public/calc.js.
 
    Usage:
      node scripts/validate-rates.js              # the gate — exits 1 on any error
-     node scripts/validate-rates.js --allow-stale  # gate, but a stale reviewedThrough warns instead of failing
+     node scripts/validate-rates.js --allow-stale  # gate, but stale reviewedThrough / cadence ages warn instead of failing
      node scripts/validate-rates.js --self-test    # run the validator against mutated copies of itself
 
    Exit codes: 0 = no errors (warnings may print), 1 = errors or self-test failure. */
@@ -19,6 +22,7 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const RATES_PATH = path.join(ROOT, "public", "rates.json");
 const CALC_PATH = path.join(ROOT, "public", "calc.js");
+const DOC_PATH = path.join(ROOT, "docs", "tariff-update-workflow.md");
 
 // Plans the tool prices (smartChargeNY is an incentive what-if, not a priced plan).
 const PRICED_PLANS = ["standard", "tou", "steadyUse", "smartEnergy"];
@@ -29,6 +33,21 @@ const ALL_PLAN_KEYS = PRICED_PLANS.concat(["smartChargeNY"]);
 // months, so shipping such data silently is a gate failure, not a warning.
 const STALE_WARN_MONTHS = 4;
 const STALE_FAIL_MONTHS = 6;
+
+// Per-source re-verification cadence (docs/tariff-update-workflow.md §2): how
+// old a plan's own verification may get before the gate complains. These are
+// the machine-readable reading of the §2 table's Cadence column — "checked at
+// least quarterly" = fail past 95 days (a quarter plus a grace week),
+// "Annual" = fail past 13 months (a year plus the PDF's published-on-a-lag
+// month) — each with a heads-up warning at ~2/3 of the window, matching the
+// reviewedThrough warn/fail ratio above. The table itself is parsed at run
+// time (loadCadences), so the doc stays the single authority: a cadence
+// reworded in the doc without a matching rule here fails the gate loudly
+// instead of silently drifting.
+const CADENCE_RULES = [
+  { re: /quarterly/i, label: "quarterly", warn: { days: 60 }, fail: { days: 95 } },
+  { re: /annual|yearly/i, label: "annual", warn: { months: 9 }, fail: { months: 13 } },
+];
 
 const EPS_ADJ = 0.05;   // allIn vs delivery + commodity — the gap is MAC/RDM/surcharges, cents-scale
 const EPS_TIE = 1e-3;   // latest bill period vs standard (both are the same ConEd publication)
@@ -53,6 +72,85 @@ function sameJson(a, b) {
 function monthsSince(isoDate, now) {
   const r = new Date(isoDate + "T00:00:00Z");
   return (now.getUTCFullYear() - r.getUTCFullYear()) * 12 + (now.getUTCMonth() - r.getUTCMonth());
+}
+function daysSince(isoDate, now) {
+  return Math.floor((now.getTime() - new Date(isoDate + "T00:00:00Z").getTime()) / 86400000);
+}
+// Age past a cadence window, compared in the window's own unit (days for the
+// quarterly sources, whole calendar months for the annual PDF).
+function pastWindow(isoDate, now, win) {
+  return win.days !== undefined ? daysSince(isoDate, now) > win.days
+                                : monthsSince(isoDate, now) > win.months;
+}
+function windowName(win) {
+  return win.days !== undefined ? `${win.days}-day` : `${win.months}-month`;
+}
+function ageIn(win, isoDate, now) {
+  return win.days !== undefined ? `${daysSince(isoDate, now)} days` : `${monthsSince(isoDate, now)} months`;
+}
+function normalizeUrl(u) {
+  return String(u || "").trim().replace(/\/+$/, "").toLowerCase();
+}
+/* Verification dates recorded in a ratesAsOf string, normalized to YYYY-MM-DD
+   and sorted ascending — the latest is the most recent re-verification, and
+   that is what cadence staleness measures. Month precision ("verified
+   2026-07") is fine; a bare publication year ("2025 published averages") is
+   deliberately not accepted — it names the publication, not the verification. */
+function verificationDates(s) {
+  if (typeof s !== "string") return [];
+  const found = s.match(/\b\d{4}-\d{2}(?:-\d{2})?\b/g) || [];
+  const out = [];
+  found.forEach((d) => {
+    const full = d.length === 7 ? d + "-01" : d;
+    if (!isNaN(new Date(full + "T00:00:00Z").getTime())) out.push(full);
+  });
+  return out.sort();
+}
+
+/* ---- the cadence source table: parsed from the workflow doc at run time ----
+   The §2 "Sources — what is authoritative" table is the single authority for
+   how stale each publication's verification may get; the gate reads it rather
+   than a private copy, so the doc and the gate cannot drift. Returns
+   { byUrl: Map<normalized source URL, cadence rule>, errors } — errors mean
+   the table itself is unreadable or reworded past recognition, which is a
+   gate failure, never a silent skip. */
+function loadCadences(docPath) {
+  const byUrl = new Map();
+  const errors = [];
+  let text = null;
+  try { text = fs.readFileSync(docPath, "utf8"); } catch (e) { /* reported below */ }
+  if (text === null) {
+    errors.push(`cadence source table: cannot read ${path.relative(ROOT, docPath)} — the gate takes each ` +
+                `source's re-verification cadence from the workflow doc's §2 table so the two cannot drift`);
+    return { byUrl, errors };
+  }
+  let inTable = false;
+  for (const line of text.split("\n")) {
+    if (!/^\s*\|/.test(line)) { if (inTable) break; continue; }  // the table ends at its first non-row line
+    const cells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+    if (cells.every((c) => /^:?-{3,}:?$/.test(c))) continue;     // header separator row
+    if (!inTable) {
+      if (/^publication/i.test(cells[0] || "") && /^cadence/i.test(cells[cells.length - 1] || "")) inTable = true;
+      continue;
+    }
+    const url = (cells[0].match(/\]\((\S+?)\)/) || [])[1];
+    const phrase = cells[cells.length - 1];
+    if (!url) {
+      errors.push(`cadence source table: row has no [publication](url) link: "${cells[0].slice(0, 80)}"`);
+      continue;
+    }
+    const rule = CADENCE_RULES.find((r) => r.re.test(phrase));
+    if (!rule) {
+      errors.push(`cadence source table: cadence "${phrase}" for ${url} matches no known window — reword it ` +
+                  `(quarterly / annual) or extend CADENCE_RULES in scripts/validate-rates.js`);
+      continue;
+    }
+    byUrl.set(normalizeUrl(url), rule);
+  }
+  if (!inTable) {
+    errors.push(`cadence source table: no Publication/Cadence table found in ${path.relative(ROOT, docPath)} §2`);
+  }
+  return { byUrl, errors };
 }
 
 /* The validator. Pure: no I/O, no clock — `now` is injected so --self-test can
@@ -210,6 +308,46 @@ function validate(rates, calcRates, opts) {
     if (!isHttps(sc.source)) err("smartChargeNY.source: required https URL");
   }
 
+  // ---- per-source re-verification cadence (docs/tariff-update-workflow.md §2) ----
+  // meta.reviewedThrough is the file-wide freshness anchor (checked above);
+  // this is the per-plan half: each publication's own cadence, measured from
+  // the latest verification date recorded in that plan's ratesAsOf prose. A
+  // plan can be current in age-checked terms while its page quietly lapses —
+  // e.g. a quarterly page nobody has re-checked since spring passes a
+  // reviewedThrough bump that only the annual PDF deserved.
+  const cadences = opts.cadences;
+  if (cadences) {
+    ALL_PLAN_KEYS.forEach((key) => {
+      const p = rates[key];
+      if (!isPlainObject(p)) return;
+      if (!isHttps(p.source)) return; // already errored above; nothing to look up
+      const cad = cadences.get(normalizeUrl(p.source));
+      if (!cad) {
+        err(`${key}.source: no row in the docs/tariff-update-workflow.md §2 source table names this publication — ` +
+            `every plan source needs a row there (with its re-verification cadence) or the gate cannot enforce it`);
+        return;
+      }
+      const dates = verificationDates(p.ratesAsOf);
+      if (!dates.length) {
+        err(`${key}.ratesAsOf: carries no verification date (add YYYY-MM or YYYY-MM-DD, e.g. "… verified 2026-07") — ` +
+            `the §2 fetching discipline records the snapshot date in this string, and the ${cad.label} ` +
+            `cadence can't be checked without one`);
+        return;
+      }
+      const latest = dates[dates.length - 1];
+      const verified = `last verified ${latest}, ${ageIn(cad.fail, latest, now)} ago`;
+      if (pastWindow(latest, now, cad.fail) && !opts.allowStale) {
+        err(`${key}.ratesAsOf: ${cad.label} source (${windowName(cad.fail)} re-verification cadence, ` +
+            `docs/tariff-update-workflow.md §2) ${verified} — past the window. Re-check the publication ` +
+            `(Wayback, per §2) and update the date, or run with --allow-stale to ship knowingly.`);
+      } else if (pastWindow(latest, now, cad.warn)) {
+        warn(`${key}.ratesAsOf: ${cad.label} source ${verified} — re-verification due before the ` +
+             `${windowName(cad.fail)} gate line` +
+             (opts.allowStale ? " (--allow-stale: shipping stale knowingly)" : ""));
+      }
+    });
+  }
+
   // ---- bill history: the effective-period table ----
   const bill = rates.bill;
   if (!isPlainObject(bill) || !Array.isArray(bill.periods) || bill.periods.length === 0) {
@@ -323,18 +461,30 @@ function per_num(obj, f) {
 function selfTest() {
   const rates = JSON.parse(fs.readFileSync(RATES_PATH, "utf8"));
   const calc = require(CALC_PATH);
+  const cad = loadCadences(DOC_PATH);
   const now = new Date();
   const failures = [];
+  let total = 0;
   const check = (label, cond) => {
+    total++;
     if (!cond) failures.push(label);
   };
+  const vopts = (o) => Object.assign({ now, cadences: cad.byUrl }, o || {});
+
+  // The cadence table parses out of the workflow doc; without it the per-source
+  // checks below would all fail for the wrong reason.
+  check("cadence source table parses from docs/tariff-update-workflow.md §2",
+        cad.errors.length === 0 && cad.byUrl.size >= ALL_PLAN_KEYS.length);
+  if (cad.errors.length) {
+    cad.errors.forEach((e) => console.error(`    cadence table error: ${e}`));
+  }
 
   // Known-good baseline: the shipped data with a fresh reviewedThrough so the
   // happy path never ages out. Must produce zero errors (warnings are fine).
   const base = clone(rates);
   base.meta.reviewedThrough = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15))
     .toISOString().slice(0, 10);
-  const baseOut = validate(base, calc.RATES, { now });
+  const baseOut = validate(base, calc.RATES, vopts());
   check("baseline copy of shipped rates.json validates with zero errors", baseOut.errors.length === 0);
   if (baseOut.errors.length) {
     baseOut.errors.forEach((e) => console.error(`    baseline error: ${e}`));
@@ -343,7 +493,7 @@ function selfTest() {
   const mutant = (label, needle, fn, opts) => {
     const m = clone(base);
     fn(m);
-    const out = validate(m, calc.RATES, Object.assign({ now }, opts || {}));
+    const out = validate(m, calc.RATES, vopts(opts));
     const hit = out.errors.some((e) => needle.test(e));
     check(`${label} — error matching ${needle}`, hit);
     if (!hit) {
@@ -393,12 +543,36 @@ function selfTest() {
   mutant("ratesAsOf divergence from calc.js", /tou\.ratesAsOf: rates\.json and calc\.js defaults disagree/,
          (m) => { m.tou.ratesAsOf = "unverified"; });
 
+  // Per-source cadence (docs/tariff-update-workflow.md §2): back-dating a
+  // plan's ratesAsOf past its source's cadence window fails the gate.
+  mutant("quarterly source past its cadence window", /tou\.ratesAsOf: quarterly source/,
+         (m) => { m.tou.ratesAsOf = "residential TOU supply rates current as of 2025-01"; });
+  mutant("annual source past its cadence window", /standard\.ratesAsOf: annual source/,
+         (m) => { m.standard.ratesAsOf = "2025 published SC1 NYC averages; PDF verified 2025-01"; });
+  mutant("ratesAsOf with no verification date", /steadyUse\.ratesAsOf: carries no verification date/,
+         (m) => { m.steadyUse.ratesAsOf = "delivery $/kW rates current as of mid-2026"; });
+  mutant("plan source absent from the §2 cadence table", /smartEnergy\.source: no row in the docs/,
+         (m) => { m.smartEnergy.source = "https://www.coned.com/en/accounts-billing/some-other-page"; });
+
+  // --allow-stale downgrades a stale per-source cadence too. The mirror
+  // discipline would otherwise also error on the ratesAsOf divergence, so this
+  // mutant mirrors the string into the calc.js side it is validated against —
+  // the only seeded defect is the stale cadence.
+  const staleCadenceAllowed = clone(base);
+  staleCadenceAllowed.tou.ratesAsOf = "residential TOU supply rates current as of 2025-01";
+  const calcForIt = clone(calc.RATES);
+  calcForIt.tou.ratesAsOf = staleCadenceAllowed.tou.ratesAsOf;
+  const scaOut = validate(staleCadenceAllowed, calcForIt, vopts({ allowStale: true }));
+  check("--allow-stale downgrades a stale per-source cadence to a warning, not an error",
+        scaOut.errors.length === 0 &&
+        scaOut.warnings.some((w) => /tou\.ratesAsOf: quarterly source.*allow-stale/.test(w)));
+
   if (failures.length) {
-    console.error(`self-test FAILED (${failures.length}/${14 + 4} checks):`);
+    console.error(`self-test FAILED (${failures.length}/${total} checks):`);
     failures.forEach((f) => console.error(`  ✗ ${f}`));
     return false;
   }
-  console.log("self-test: all 18 validator checks behave as documented");
+  console.log(`self-test: all ${total} validator checks behave as documented`);
   return true;
 }
 
@@ -418,20 +592,23 @@ function main() {
     process.exit(1);
   }
   const calc = require(CALC_PATH);
-  const { errors, warnings } = validate(rates, calc.RATES, { now: new Date(), allowStale });
+  const cad = loadCadences(DOC_PATH);
+  const { errors, warnings } = validate(rates, calc.RATES, { now: new Date(), allowStale, cadences: cad.byUrl });
+  const allErrors = cad.errors.concat(errors);
 
   warnings.forEach((w) => console.warn(`WARN: ${w}`));
-  errors.forEach((e) => console.error(`FAIL: ${e}`));
-  if (errors.length) {
-    console.error(`\nvalidate-rates: ${errors.length} error(s), ${warnings.length} warning(s) — ` +
+  allErrors.forEach((e) => console.error(`FAIL: ${e}`));
+  if (allErrors.length) {
+    console.error(`\nvalidate-rates: ${allErrors.length} error(s), ${warnings.length} warning(s) — ` +
                   `fix rates.json/calc.js before deploying (docs/tariff-update-workflow.md)`);
     process.exit(1);
   }
   console.log(`validate-rates: OK — rates.json is complete, internally consistent, and fresh ` +
-              `(reviewedThrough ${rates.meta.reviewedThrough}; ${warnings.length} warning(s))`);
+              `(reviewedThrough ${rates.meta.reviewedThrough}; per-source cadences enforced against ` +
+              `the workflow doc's §2 table; ${warnings.length} warning(s))`);
   process.exit(0);
 }
 
 if (require.main === module) main();
 
-module.exports = { validate, selfTest, STALE_WARN_MONTHS, STALE_FAIL_MONTHS };
+module.exports = { validate, selfTest, loadCadences, CADENCE_RULES, STALE_WARN_MONTHS, STALE_FAIL_MONTHS };

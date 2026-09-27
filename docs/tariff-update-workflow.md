@@ -54,6 +54,30 @@ nothing else is a valid source for a number:
 | [Smart Energy Plan page](https://www.coned.com/en/accounts-billing/smart-energy-plan) | `smartEnergy.demand.*`, `customer`, lock-in terms, solar guidance | Checked at least quarterly |
 | [EV rewards page](https://www.coned.com/en/save-money/rebates-incentives-tax-credits/rebates-incentives-tax-credits-for-residential-customers/electric-vehicle-rewards) | `smartChargeNY.offPeakCredit`, `offPeakWindow`, eligibility wording | Checked at least quarterly |
 
+**Cadence enforcement:** this table is not advisory — it is the gate's data.
+`scripts/validate-rates.js` parses it at run time, matches each plan's
+`source` URL to its row, and reads the Cadence cell as an enforcement window:
+"checked at least quarterly" = **fail past 95 days**, "Annual" = **fail past
+13 months**, each with a heads-up warning at 60 days / 9 months (~⅔ of the
+window, mirroring the reviewedThrough warn/fail ratio). The age measured is
+the latest `YYYY-MM` / `YYYY-MM-DD` verification date recorded in the plan's
+`ratesAsOf` string — which is why the fetching discipline below requires one
+there. Reading the cadence from this table (rather than a copy inside the
+script) is deliberate, so gate and doc cannot drift. Four consequences:
+
+- A plan `source` with **no row in this table** fails the gate — add the row,
+  with its cadence, in the same change as the new source.
+- A `ratesAsOf` carrying **no verification date** fails the gate. A bare
+  publication year ("2025 published averages") names the publication, not the
+  verification, and does not count; where a string records several dates, the
+  latest is the one measured.
+- A Cadence cell **reworded past recognition** (anything other than
+  quarterly/annual) fails the gate rather than being silently ignored — extend
+  `CADENCE_RULES` in `scripts/validate-rates.js` in the same change.
+- `--allow-stale` downgrades a past-window cadence to a warning, exactly as it
+  does for `meta.reviewedThrough` — it means "shipping knowingly stale", never
+  "skip the check".
+
 **Fetching discipline:** coned.com Akamai-blocks fetches from this
 environment (verified in ADR-002). Verify against **Wayback Machine snapshots**
 of the pages, and record the snapshot date in the commit message and in the
@@ -89,7 +113,7 @@ the engine silently ignores — worse than a missing one).
 | `name` / `short` | string | ConEd's exact display name + the UI short label. `formerly` on Steady Use carries its old name ("Select Pricing Plan"). |
 | `basis` | `"energy"` \| `"demand"` | How the plan bills: total kWh, or peak kW from interval data. Selects the pricing path in calc.js. |
 | `eligibility` | string | Who the plan is open to, in ConEd's terms. |
-| `ratesAsOf` | string | Per-plan currency statement ("delivery $/kW rates current as of 2026-07"). Shown verbatim in the plan comparison. |
+| `ratesAsOf` | string | Per-plan currency statement ("delivery $/kW rates current as of 2026-07"). Shown verbatim in the plan comparison. Must carry at least one `YYYY-MM`/`YYYY-MM-DD` verification date — the latest one is what the §2 cadence gate measures; a bare publication year does not count. |
 | `source` | https URL | The publication above this plan's numbers come from. |
 | `requires` | object | Eligibility-engine facts: `serviceClass: "SC1"` always; `meter: "smart"` on both demand plans. |
 | `lockIn` | object \| `null` | Published commitment terms: `minStayMonths`, `reenrollBlockMonths`, `escoExempt`, `cancelAnytime`, `note`. `null` only for Standard (the default rate every plan can return to). |
@@ -132,7 +156,11 @@ Tariff time is handled at four distinct layers; do not blur them:
 2. **Per-plan currency** — `ratesAsOf` strings, shown to users verbatim in the
    plan comparison ("delivery $/kW rates current as of 2026-07"). These are
    prose, deliberately: ConEd publishes different components on different
-   lags, and a single date would claim more consistency than exists.
+   lags, and a single date would claim more consistency than exists. But the
+   prose must embed each string's own verification date(s) (`YYYY-MM` or
+   `YYYY-MM-DD`, latest wins): the §2 cadence gate measures it, and prose
+   without a date in it is exactly the staleness this workflow exists to make
+   visible.
 3. **Billing-year periods** — `bill.periods[]`, keyed by calendar year. A
    usage year with no period prices at the **latest prior year** and
    `reconstructBill` flags the result `projected` — this is exactly how "2026
@@ -173,6 +201,12 @@ each defect is caught — the validator testing itself, shipped with itself).
 - `meta.reviewedThrough` missing/malformed, or **≥ 6 months old** (unless
   `--allow-stale`); `meta.asOf`/`switchTiming` missing; calc.js `meta.version`
   not semver / `meta.updated` not `YYYY-MM`.
+- **Per-source cadence** (§2 table, parsed at run time): a plan's `ratesAsOf`
+  older than its publication's window — quarterly pages past **95 days**, the
+  historical-averages PDF past **13 months** — (unless `--allow-stale`); a
+  `ratesAsOf` carrying no `YYYY-MM`/`YYYY-MM-DD` verification date; a plan
+  `source` with no row in the §2 table; a Cadence cell the gate cannot map to
+  a window.
 - Plan metadata missing (`name`/`short`/`basis`/`eligibility`/`ratesAsOf`/
   `source`), non-https source, `requires.serviceClass ≠ SC1`.
 - Rate fields: missing or non-positive numbers for the plan's basis; values
@@ -191,10 +225,12 @@ each defect is caught — the validator testing itself, shipped with itself).
 
 **Warnings (print, do not block):**
 
-- **Freshness:** `reviewedThrough` ≥ 4 months old; no `bill.periods` entry for
-  the current year (current-year usage is being priced `projected` — ConEd
-  publishes on a lag, so this is normal most of the year, but it must be seen
-  and the caveat kept, not slept through).
+- **Freshness:** `reviewedThrough` ≥ 4 months old; a plan's latest `ratesAsOf`
+  verification date past 60 days (quarterly sources) / 9 months (annual PDF) —
+  the mid-quarter reminder that the §2 sweep is coming due; no `bill.periods`
+  entry for the current year (current-year usage is being priced `projected` —
+  ConEd publishes on a lag, so this is normal most of the year, but it must be
+  seen and the caveat kept, not slept through).
 - **Numeric divergence** between rates.json and calc.js defaults (the override
   path working — flagged so both sides get mirrored in the same release).
 - `meta.version` / wording divergence between the two files.
@@ -214,6 +250,9 @@ UI banner is what a user sees if something ships stale anyway.
 | Missing plan / field / bad units / broken consistency | `validate-rates.js` errors | pre-deploy gate |
 | Latest published year not reflected in both `standard.*` and `bill.periods` | gate tie check | pre-deploy gate |
 | Stale verification (> 6 months) | gate error; `checkStaleness()` banner | gate, then UI |
+| A quarterly page's verification lapses past its §2 cadence (95 days) | gate per-source cadence error | pre-deploy gate |
+| Annual PDF unverified past 13 months | gate per-source cadence error | pre-deploy gate |
+| `ratesAsOf` with no verification date, or a `source` with no §2 row | gate error | pre-deploy gate |
 | Current year priced `projected` | gate warning + meta caveat | gate, then UI |
 | rates.json / calc.js divergence (rules) | gate error; tests 10 & 13 | gate + test suite |
 | rates.json / calc.js divergence (numbers) | gate warning; `verify.js` drift warning | gate + verify |
@@ -267,8 +306,22 @@ gate.** Work directly on `main` (no branches); stage precise paths.
 
 **Quarterly re-verification** is the standing cadence: even with no known
 change, re-check every source (§2), confirm `reviewedThrough` is inside the
-4-month warning line, and ship the (usually no-op) verification bump. This is
-what keeps the 6-month gate from ever firing in anger.
+4-month warning line, refresh the verification dates of every `ratesAsOf`
+string you actually re-checked, and ship the (usually no-op) verification
+bump. This is what keeps the 6-month gate and the §2 per-source cadence
+windows (95 days / 13 months) from ever firing in anger.
+
+**Who performs the sweep:** it is filed as a bead in this repo's bead queue —
+the operator creates it at the start of each quarter, and any agent that
+notices the gate's 60-day / 9-month warnings may create it too; whichever
+worker claims the bead executes steps 1–5 above against fresh Wayback
+snapshots. Nothing wall-clock-scheduled runs this, deliberately (§7): the
+enforcement is (a) the **cadence gate**, which fails the deploy at 95 days /
+13 months whether or not anyone remembered, and (b) the **mid-quarter
+warnings**, which surface on every definition-of-done run — every worker,
+every NEEDLE close verification, any human running the suite. A lapsed sweep
+is therefore loud within a quarter, not discoverable at the next tariff
+change.
 
 ## 7. What this workflow deliberately does *not* do
 
