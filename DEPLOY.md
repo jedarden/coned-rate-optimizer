@@ -50,7 +50,7 @@ git add pages.tf dns.tf && git commit -m "feat(cloudflare): coned.jedarden.com P
 
 ## Step 2 — deploy the site content
 
-**Push-to-deploy** is wired via the `website-build` Argo WorkflowTemplate (see `docs/plan/plan.md` ADR-001). Every push to `main` auto-deploys to https://coned.jedarden.com. Tariff/rates changes are just such a push — but they must first pass the tariff data gate per [`docs/tariff-update-workflow.md`](docs/tariff-update-workflow.md) (run `scripts/definition-of-done.sh`; a red gate means fix `rates.json`/`calc.js` before pushing).
+**Push-to-deploy** is wired via the `website-build` Argo WorkflowTemplate (see `docs/plan/plan.md` ADR-001). Every push to `main` auto-deploys to https://coned.jedarden.com. The pipeline runs the tariff data gate **as the deploy's build step**: the coned trigger in `declarative-config/k8s/iad-ci/argo-events/website-build-sensor.yml` sets `build-command: sh scripts/definition-of-done.sh`, and the template executes that under `set -e` **before** `wrangler pages deploy` — so a change that fails the gate (per [`docs/tariff-update-workflow.md`](docs/tariff-update-workflow.md)) fails the workflow and **does not deploy**. Running `scripts/definition-of-done.sh` locally before pushing is still worth it: it catches a red gate in seconds instead of in a failed CI run.
 
 ### Break-glass only: direct wrangler deploy
 
@@ -58,7 +58,10 @@ git add pages.tf dns.tf && git commit -m "feat(cloudflare): coned.jedarden.com P
 
 Normal deployments happen automatically via push-to-deploy (see above).
 
+**Hard rule — the gate applies here too.** A manual wrangler deploy bypasses the pipeline's build step, so it must supply the gate itself: run `scripts/definition-of-done.sh` **immediately before** any manual `wrangler pages deploy`, from the exact tree being deployed, and do not deploy while it is red (exit ≠ 0). A red gate means fix `rates.json`/`calc.js` first — the only exception is rolling back production to a known-good prior release, which by definition passed the gate when it shipped.
+
 ```bash
+sh scripts/definition-of-done.sh   # must be green before anything below runs
 CLOUDFLARE_API_TOKEN=<from OpenBao rs-manager/iad-ci/cloudflare/pages → CF_API> \
   wrangler pages deploy public --project-name=coned --branch=main
 ```

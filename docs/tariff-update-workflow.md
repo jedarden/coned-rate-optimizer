@@ -5,7 +5,8 @@ ships from this repo. Every change to `public/rates.json`, to the baked-in
 `RATES` defaults in `public/calc.js`, or to any ConEd rate/eligibility number
 the tool displays goes through this workflow. The mechanical half of it is
 `scripts/validate-rates.js` (the "gate"), which runs as part of
-`scripts/definition-of-done.sh` — a change that fails the gate does not deploy.
+`scripts/definition-of-done.sh` — and the deploy pipeline runs that script as
+its build step, so a change that fails the gate fails the deploy.
 
 Started 2026-09-27 (bead `conedrat-cd9785f1`); decision recorded as
 [ADR-003](../docs/plan/plan.md) in `docs/plan/plan.md`.
@@ -186,9 +187,14 @@ re-verified in the same pass.
 wired into `scripts/definition-of-done.sh` (after self-test, before the test
 suite — a schema-broken rates.json would otherwise fail the suite with
 misleading errors), so it runs for every worker, every NEEDLE close
-verification, and any human running the definition of done. The deploy itself
-is push-to-deploy (§6), so **the gate is the thing that stands between a
-tariff edit and production**.
+verification, and any human running the definition of done. And the deploy
+itself runs that same script: the push-to-deploy trigger (§6) sets
+`build-command: sh scripts/definition-of-done.sh`, which the `website-build`
+template executes under `set -e` **before** `wrangler pages deploy` — a red
+run fails the workflow and nothing is published. **The gate is the thing that
+stands between a tariff edit and production**, mechanically, not just by
+convention. (Break-glass manual wrangler deploys bypass the pipeline and must
+supply the gate themselves — the hard rule in `DEPLOY.md`.)
 
 It is pure (no network, no clock — `now` is injected) and has two modes:
 the **gate** (`validate-rates.js`, exits 1 on any error) and the
@@ -285,7 +291,9 @@ gate.** Work directly on `main` (no branches); stage precise paths.
 5. **Run the gate and the suite:** `scripts/definition-of-done.sh` —
    self-test, gate, `node test/test.js`, `node verify.js`. Green only, and
    read the warnings: a stale-data or numeric-divergence warning at this point
-   means step 2–3 was incomplete.
+   means step 2–3 was incomplete. This is a rehearsal, not the enforcement —
+   the pipeline re-runs the identical script as the deploy's build step
+   (step 7).
 6. **Commit both files in one commit** (plus any doc/test updates the change
    requires), message naming the source and snapshot date, e.g.
    `feat(rates): 2026 published SC1 averages (historical-averages PDF archived 2026-07-14)`.
@@ -294,6 +302,10 @@ gate.** Work directly on `main` (no branches); stage precise paths.
 7. **Push to `origin`** (Forgejo). Push-to-deploy fires; watch the
    `website-build` workflow on `iad-ci`
    (`kubectl --server=http://traefik-iad-ci:8001 get workflows -n argo-workflows`).
+   The workflow's build step is this same `scripts/definition-of-done.sh`
+   (`build-command` in the sensor's coned trigger), and the deploy only
+   happens if it exits green — a red gate ends the workflow before
+   `wrangler pages deploy` runs.
 8. **Post-deploy verification:** fetch
    `https://coned.jedarden.com/rates.json` and confirm the new
    `reviewedThrough`/version is what production serves, and that
