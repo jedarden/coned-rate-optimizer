@@ -6,14 +6,15 @@
 
   var RATES = {
     meta: {
-      version: "1.6.0",
+      version: "1.7.0",
       asOf: "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
       reviewedThrough: "2026-07-01",
       utility: "Con Edison",
       serviceClass: "SC1 (Rate I) — NYC Residential",
       basis: "Standard/TOU = ConEd 2025 published SC1 NYC average (grossed up for GRT + sales tax). Demand plans use ConEd's published $/kW delivery rates.",
-      updated: "2026-07",
+      updated: "2026-09",
       peakWindow: "Energy plans: peak 8am–midnight, off-peak midnight–8am. Demand plans (Steady Use / Smart Energy): peak weekdays noon–8pm.",
+      switchTiming: "A rate switch takes effect with a future meter read — typically your next bill or the one after (1–2 billing cycles).",
       caveats: [
         "Absolute totals are ±~5%: the monthly Market Supply Charge varies, and 2026 months are priced at 2025 rates.",
         "Standard & Time-of-Use assume delivery/MAC/RDM/surcharges are identical; only supply is time-differentiated.",
@@ -39,6 +40,8 @@
       eligibility: "every SC1 residential customer (the default rate)",
       ratesAsOf: "2025 published SC1 NYC averages (2026 usage priced at 2025 rates)",
       source: "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
+      requires: { serviceClass: "SC1" },
+      lockIn: null,   // the default rate — no commitment, and every other plan can switch back to it
       allIn: 0.338267, commodity: 0.137533, delivery: 0.183233, customer: 16.33
     },
     tou: {
@@ -46,6 +49,15 @@
       eligibility: "SC1 residential customers who opt in",
       ratesAsOf: "residential TOU supply rates current as of 2026-07",
       source: "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
+      requires: { serviceClass: "SC1" },
+      // ConEd's published enrollment terms: "After you switch to the Time-of-Use Rate, you must
+      // stay enrolled for one year unless you get your energy from an energy service company.
+      // If you switch back to the Standard Residential Rate, you cannot rejoin the Time-of-Use
+      // Rate for 18 months." (coned.com TOU page, verified 2026-06 archive)
+      lockIn: {
+        minStayMonths: 12, reenrollBlockMonths: 18, escoExempt: true,
+        note: "one-year minimum on TOU (ESCO-supplied homes exempt); leave and you can't rejoin TOU for 18 months"
+      },
       nonCommodity: 0.338267 - 0.137533, offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711, gross: 1.10, customer: 21.00
     },
     smartChargeNY: {
@@ -59,6 +71,16 @@
       eligibility: "designed for steady, heat-pump-style loads",
       ratesAsOf: "delivery $/kW rates current as of 2026-07",
       source: "https://www.coned.com/en/accounts-billing/steady-use-rate",
+      // ConEd: "Any Con Edison customer with a smart meter can enroll in the Steady Use Rate."
+      requires: { serviceClass: "SC1", meter: "smart" },
+      // ConEd: "You can cancel anytime without penalty but won't be able to reenroll for
+      // 18 months after opting out." (coned.com Steady Use page, verified 2026-07 archive)
+      lockIn: {
+        cancelAnytime: true, reenrollBlockMonths: 18,
+        note: "cancel anytime without penalty, but you can't re-enroll for 18 months after opting out"
+      },
+      solar: "ConEd says solar / net-metering homes are likely not a good fit for the Steady Use Rate — Standard or Time-of-Use may suit you better.",
+      smartChargeConflict: "Enrolling in Steady Use automatically unenrolls you from SmartCharge NY.",
       peakStart: 12, peakEnd: 20, peakWindow: "weekdays noon–8pm",
       demand: { peakSummer: 27.35, peakWinter: 21.04, off: 7.17 }, customer: 16.33
     },
@@ -67,6 +89,15 @@
       eligibility: "any smart-meter home",
       ratesAsOf: "delivery $/kW rates current as of 2026-07",
       source: "https://www.coned.com/en/accounts-billing/smart-energy-plan",
+      // ConEd: "Anyone with a smart meter installed in their home can participate in the Smart Energy Plan."
+      requires: { serviceClass: "SC1", meter: "smart" },
+      // ConEd: "You can cancel anytime without penalty but won't be able to reenroll for
+      // 18 months after opting out." (coned.com Smart Energy page, verified 2026-05 archive)
+      lockIn: {
+        cancelAnytime: true, reenrollBlockMonths: 18,
+        note: "cancel anytime without penalty, but you can't re-enroll for 18 months after opting out"
+      },
+      solar: "ConEd does not recommend the Smart Energy Plan for solar customers (its billing structure works against net metering) and suggests the Net Metering Plan instead.",
       peakStart: 12, peakEnd: 20, peakWindow: "weekdays noon–8pm",
       demand: { peakSummer: 30.68, peakWinter: 23.60, off: 10.06 }, customer: 16.33
     }
@@ -252,7 +283,115 @@
     p.eligibility = r.eligibility || null;
     p.formerly = r.formerly || null;
     p.ratesAsOf = r.ratesAsOf || RATES.meta.asOf;
+    p.lockIn = (r.lockIn && r.lockIn.note) || null;
     return p;
+  }
+
+  // ---- eligibility & lock-in engine ----
+  // ConEd's published rules decide which plans are valid alternatives for a given home; the
+  // profile carries the facts the customer declares (all optional — defaults describe the home
+  // the rate data already assumes: an SC1 · NYC · smart-meter home on Standard).
+  var DEFAULT_PROFILE = {
+    territory: "nyc",          // nyc | westchester | outside (ConEd electric territory)
+    serviceClass: "sc1",       // only SC1 residential is modeled; anything else is out of scope
+    meter: "smart",            // smart | legacy — the demand plans require an AMI smart meter
+    currentPlan: "standard",   // standard | tou | steady | smart — you can't switch to your own plan
+    solar: false,              // net-metered solar changes which plans make sense (advisory)
+    esco: false,               // ESCO supply changes both the math and the TOU commitment
+    heatPump: false            // unlocks ConEd's 12-month Steady Use price guarantee note
+  };
+  var PLAN_KEYS = ["standard", "tou", "steady", "smart"];
+
+  function normalizeProfile(raw) {
+    raw = raw || {};
+    var p = {};
+    Object.keys(DEFAULT_PROFILE).forEach(function (k) {
+      var v = raw[k], d = DEFAULT_PROFILE[k];
+      if (v === undefined || v === null || v === "") { p[k] = d; return; }
+      if (typeof d === "boolean") { p[k] = !!v; return; }
+      p[k] = String(v).toLowerCase();
+    });
+    if (p.territory !== "nyc" && p.territory !== "westchester") p.territory = "outside";
+    p.serviceClass = p.serviceClass === "sc1" ? "sc1" : "other";
+    if (p.meter !== "smart" && p.meter !== "legacy") p.meter = "legacy";
+    if (PLAN_KEYS.indexOf(p.currentPlan) === -1) p.currentPlan = "standard";
+    return p;
+  }
+
+  // The pure rule check. ctx: { hasDemand: interval hours present, smartCharge: EV what-if on }.
+  // Returns { profile, blockers, notes, verdicts } — verdicts[key] =
+  // { available, current, reason, notes } for each of the four plans. Blockers invalidate the
+  // whole analysis (wrong territory / service class); per-plan notes explain timing, lock-in,
+  // and fit caveats on the plans that remain valid.
+  function checkEligibility(profileRaw, ctx) {
+    var profile = normalizeProfile(profileRaw);
+    ctx = ctx || {};
+    var blockers = [], notes = [], verdicts = {};
+    PLAN_KEYS.forEach(function (key) {
+      verdicts[key] = { available: true, current: key === profile.currentPlan, reason: null, notes: [] };
+    });
+    function each(fn) { PLAN_KEYS.forEach(function (key) { fn(key, verdicts[key]); }); }
+
+    // -- account: the modeled inventory is SC1 residential only
+    if (profile.serviceClass !== "sc1") {
+      blockers.push("This tool models Con Edison's SC1 residential plans only — a non-residential or non-SC1 account isn't covered, so treat every estimate below as reference, not advice.");
+      each(function (key, v) { v.available = false; v.reason = "SC1 residential accounts only"; });
+    }
+
+    // -- location: ConEd electric territory; Westchester gets NYC-priced caveat
+    if (profile.territory === "outside") {
+      blockers.push("This analysis covers Con Edison electric customers (NYC & Westchester) only.");
+      each(function (key, v) { if (!v.reason) { v.available = false; v.reason = "not a ConEd electric account"; } });
+    } else if (profile.territory === "westchester") {
+      notes.push("Your result is priced on ConEd's published NYC SC1 averages — Westchester delivery rates differ, so treat totals as directional.");
+    }
+
+    // -- meter: the demand plans bill on peak kW, which only a smart meter's hourly data can show
+    each(function (key, v) {
+      if (key !== "steady" && key !== "smart") return;
+      if (profile.meter === "legacy") { v.available = false; v.reason = "requires a smart meter — a traditional meter can't bill on demand"; }
+      else if (!ctx.hasDemand) { v.available = false; v.reason = "requires a smart meter's hourly interval data — your file has none, so it can't even be estimated"; }
+    });
+
+    // -- current plan: it stays visible as your baseline, but is never a switch candidate
+    verdicts[profile.currentPlan].notes.push("You're already on this plan — shown as your baseline, not a switch option.");
+
+    // -- solar: ConEd's own guidance is advisory ("not a good fit" / "do not recommend"), so
+    //    these are notes rather than exclusions — the customer knows their setup best.
+    if (profile.solar) {
+      each(function (key, v) {
+        var note = planRates(key).solar;
+        if (note && v.available) v.notes.push(note);
+      });
+    }
+
+    // -- ESCO supply: ConEd bills supply at the ESCO contract price, which reshapes both the
+    //    math and the terms on every plan
+    if (profile.esco) {
+      notes.push("You buy supply from an ESCO: ConEd bills supply at your ESCO's contract price, so the time-differentiated supply estimates below don't apply — the delivery-side comparison does.");
+      if (verdicts.tou.available) verdicts.tou.notes.push("TOU's one-year commitment doesn't apply to you — ConEd exempts ESCO-supplied homes from it.");
+    }
+
+    // -- enrollment timing + lock-in: only meaningful on plans you could actually switch to
+    each(function (key, v) {
+      if (v.current || !v.available) return;
+      if (key === "tou") {
+        v.notes.push("Seasonality changes the math: summer (Jun–Sep) TOU peak supply is " + cph(RATES.tou.peakSummer) + " vs " + cph(RATES.tou.peakWinter) + " the rest of the year — check what a summer month does to this estimate before switching.");
+      }
+      if (key === "steady" && profile.heatPump) {
+        v.notes.push("New-to-plan heat-pump homes get ConEd's 12-month price guarantee on Steady Use: if your first year costs more than Standard would have, ConEd credits the difference.");
+      }
+      var r = planRates(key);
+      if (r.lockIn && r.lockIn.note) v.notes.push("Lock-in: " + r.lockIn.note + ".");
+    });
+
+    // -- SmartCharge NY conflict: the Steady Use enrollment kicks you off the program
+    if (ctx.smartCharge && profile.currentPlan !== "steady" && verdicts.steady.available) {
+      var conflict = planRates("steady").smartChargeConflict;
+      if (conflict) verdicts.steady.notes.push(conflict);
+    }
+
+    return { profile: profile, blockers: blockers, notes: notes, verdicts: verdicts };
   }
 
   function analyze(parsed, options) {
@@ -261,7 +400,7 @@
     var factor = (ndays >= 350 && ndays <= 385) ? 1 : (ndays > 0 ? 365 / ndays : 1);
     var stdC = costStandard(months), touC = costTOU(months, options), std = stdC.total, tou = touC.total;
     var plans = [
-      enrich({ key: "standard", name: RATES.standard.name, cost: std, breakdown: stdC.lines, current: true, avail: true }),
+      enrich({ key: "standard", name: RATES.standard.name, cost: std, breakdown: stdC.lines, avail: true }),
       enrich({ key: "tou", name: RATES.tou.name, cost: tou, breakdown: touC.lines, avail: true, smartChargeNY: touC.smartChargeNY })
     ];
     var hasDemand = !!(hours && hours.length);
@@ -270,24 +409,56 @@
       plans.push(enrich({ key: "steady", name: RATES.steadyUse.name, cost: s1.total, breakdown: s1.lines, demand: true, eligibility: RATES.steadyUse.eligibility }));
       plans.push(enrich({ key: "smart", name: RATES.smartEnergy.name, cost: s2.total, breakdown: s2.lines, demand: true, eligibility: RATES.smartEnergy.eligibility }));
     }
-    var cheapest = plans.filter(function (p) { return p.avail; }).reduce(function (a, b) { return b.cost < a.cost ? b : a; });
-    var bestDemand = plans.filter(function (p) { return p.demand; }).reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, null);
-    // Ranked plan-by-plan comparison: cheapest first, deltas vs the current Standard plan.
+    // Eligibility & lock-in rules (location, account, meter, current plan, fit, timing, lock-in)
+    // decide which priced plans are valid alternatives — excluded ones stay visible with reasons.
+    var elig = checkEligibility(options && options.profile, { hasDemand: hasDemand, smartCharge: touC.smartChargeNY.enabled });
+    plans.forEach(function (p) {
+      var v = elig.verdicts[p.key];
+      if (!v) { p.avail = false; p.excludedReason = "not in the modeled inventory"; return; }
+      p.avail = !!v.available;
+      p.current = !!v.current;
+      p.excludedReason = v.available ? null : v.reason;
+      p.eligibilityNotes = v.notes.slice();
+    });
+    var currentPlan = plans.filter(function (p) { return p.current; })[0] || plans[0];
+    var switchable = plans.filter(function (p) { return p.avail && !p.current; });
+    var switchTarget = switchable.reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, null);
+    var cheapest = plans.filter(function (p) { return p.avail !== false; })
+      .reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, currentPlan);
+    var bestDemand = plans.filter(function (p) { return p.demand && p.avail; }).reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, null);
+    var curCost = currentPlan ? currentPlan.cost : std;
+    // Ranked plan-by-plan comparison: viable plans cheapest-first, excluded ones after (still
+    // visible, with the reason), deltas vs the current Standard plan.
     var comparison = plans.map(function (p) {
       return { key: p.key, name: p.name, short: p.short, basis: p.basis, eligibility: p.eligibility, formerly: p.formerly,
         current: !!p.current, estimate: !!p.demand, cost: p.cost, annualCost: p.cost * factor,
-        deltaAnnual: (p.cost - std) * factor, ratesAsOf: p.ratesAsOf };
-    }).sort(function (a, b) { return (a.annualCost - b.annualCost) || ((b.current ? 1 : 0) - (a.current ? 1 : 0)); });
+        deltaAnnual: (p.cost - std) * factor, ratesAsOf: p.ratesAsOf,
+        avail: p.avail !== false, excludedReason: p.excludedReason || null,
+        eligibilityNotes: p.eligibilityNotes || [], lockIn: p.lockIn || null };
+    }).sort(function (a, b) {
+      if (a.avail !== b.avail) return a.avail ? -1 : 1;
+      return (a.annualCost - b.annualCost) || ((b.current ? 1 : 0) - (a.current ? 1 : 0));
+    });
+    var recommendation;
+    if (elig.blockers.length) recommendation = "These plans aren't applicable to the account you described — the numbers are reference only. See the warning above your results.";
+    else if (!switchTarget) recommendation = "No eligible alternative — " + (currentPlan ? currentPlan.name : "your current plan") + " is the only plan available to you.";
+    else if (switchTarget.cost < curCost - 0.005) recommendation = "Switch to " + switchTarget.name + " to save.";
+    else recommendation = "Stay on " + (currentPlan ? currentPlan.short || currentPlan.name : "Standard") + " — no plan switch lowers your bill.";
     return {
       ndays: ndays, annualFactor: factor, totalKwh: totals.total, peakKwh: totals.peak, offKwh: totals.off,
       peakPct: totals.total ? totals.peak / totals.total * 100 : 0,
       months: months, hours: hours, plans: plans, cheapest: cheapest, hasDemand: hasDemand,
+      profile: elig.profile, eligibility: { blockers: elig.blockers, notes: elig.notes, verdicts: elig.verdicts },
+      switchTarget: switchTarget,
       comparison: comparison,
       smartChargeNY: touC.smartChargeNY,
       bestDemand: bestDemand, demandOpportunity: bestDemand && bestDemand.cost < std * 0.97,
       standardCost: std, touCost: tou, standardAnnual: std * factor, touAnnual: tou * factor,
-      touDelta: tou - std, touDeltaAnnual: (tou - std) * factor, savingsIfSwitch: std - cheapest.cost,
-      recommendation: cheapest.key === "standard" ? "Stay on Standard — no plan switch lowers your bill." : "Switch to " + cheapest.name + " to save."
+      touDelta: tou - std, touDeltaAnnual: (tou - std) * factor,
+      // Savings if you leave your current plan for the best eligible alternative — negative
+      // means switching can't help. (With the default profile the current plan is Standard.)
+      savingsIfSwitch: switchTarget ? curCost - switchTarget.cost : 0,
+      recommendation: recommendation
     };
   }
 
@@ -316,7 +487,7 @@
     return Promise.reject(new Error("unsupported compression in the .zip (method " + chosen.method + ")."));
   }
 
-  var api = { RATES: RATES, parse: parse, parseGreenButton: parseGreenButton, parseESPI: parseESPI, costStandard: costStandard, costTOU: costTOU, costDemand: costDemand, analyze: analyze, unzipCsv: unzipCsv, applyRates: applyRates };
+  var api = { RATES: RATES, parse: parse, parseGreenButton: parseGreenButton, parseESPI: parseESPI, costStandard: costStandard, costTOU: costTOU, costDemand: costDemand, analyze: analyze, checkEligibility: checkEligibility, normalizeProfile: normalizeProfile, unzipCsv: unzipCsv, applyRates: applyRates };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ConedCalc = api;
 })(typeof window !== "undefined" ? window : globalThis);

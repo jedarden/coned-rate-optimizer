@@ -1,8 +1,9 @@
 {
-  "_comment": "ConEd SC1 residential rates. Edit + redeploy to update the tool with no code change. app.js fetches this and overrides the defaults baked into calc.js. Cents are expressed as $/kWh; demand rates are $/kW. Each plan also carries display metadata (name, basis, eligibility, ratesAsOf, source) that the plan-by-plan comparison surfaces.",
+  "_comment": "ConEd SC1 residential rates. Edit + redeploy to update the tool with no code change. app.js fetches this and overrides the defaults baked into calc.js. Cents are expressed as $/kWh; demand rates are $/kW. Each plan also carries display metadata (name, basis, eligibility, ratesAsOf, source) and its published eligibility/lock-in rules (requires, lockIn, solar, smartChargeConflict) that the eligibility engine and plan-by-plan comparison surface.",
   "meta": {
     "asOf": "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
-    "reviewedThrough": "2026-07-01"
+    "reviewedThrough": "2026-07-01",
+    "switchTiming": "A rate switch takes effect with a future meter read — typically your next bill or the one after (1–2 billing cycles)."
   },
   "standard": {
     "name": "Standard Residential",
@@ -11,6 +12,8 @@
     "eligibility": "every SC1 residential customer (the default rate)",
     "ratesAsOf": "2025 published SC1 NYC averages (2026 usage priced at 2025 rates)",
     "source": "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
+    "requires": { "serviceClass": "SC1" },
+    "lockIn": null,
     "allIn": 0.338267,
     "commodity": 0.137533,
     "delivery": 0.183233,
@@ -23,6 +26,13 @@
     "eligibility": "SC1 residential customers who opt in",
     "ratesAsOf": "residential TOU supply rates current as of 2026-07",
     "source": "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
+    "requires": { "serviceClass": "SC1" },
+    "lockIn": {
+      "minStayMonths": 12,
+      "reenrollBlockMonths": 18,
+      "escoExempt": true,
+      "note": "one-year minimum on TOU (ESCO-supplied homes exempt); leave and you can't rejoin TOU for 18 months"
+    },
     "offPeak": 0.0522,
     "peakSummer": 0.2786,
     "peakWinter": 0.1711,
@@ -45,6 +55,14 @@
     "eligibility": "designed for steady, heat-pump-style loads",
     "ratesAsOf": "delivery $/kW rates current as of 2026-07",
     "source": "https://www.coned.com/en/accounts-billing/steady-use-rate",
+    "requires": { "serviceClass": "SC1", "meter": "smart" },
+    "lockIn": {
+      "cancelAnytime": true,
+      "reenrollBlockMonths": 18,
+      "note": "cancel anytime without penalty, but you can't re-enroll for 18 months after opting out"
+    },
+    "solar": "ConEd says solar / net-metering homes are likely not a good fit for the Steady Use Rate — Standard or Time-of-Use may suit you better.",
+    "smartChargeConflict": "Enrolling in Steady Use automatically unenrolls you from SmartCharge NY.",
     "peakWindow": "weekdays noon–8pm",
     "demand": { "peakSummer": 27.35, "peakWinter": 21.04, "off": 7.17 },
     "customer": 16.33
@@ -56,6 +74,13 @@
     "eligibility": "any smart-meter home",
     "ratesAsOf": "delivery $/kW rates current as of 2026-07",
     "source": "https://www.coned.com/en/accounts-billing/smart-energy-plan",
+    "requires": { "serviceClass": "SC1", "meter": "smart" },
+    "lockIn": {
+      "cancelAnytime": true,
+      "reenrollBlockMonths": 18,
+      "note": "cancel anytime without penalty, but you can't re-enroll for 18 months after opting out"
+    },
+    "solar": "ConEd does not recommend the Smart Energy Plan for solar customers (its billing structure works against net metering) and suggests the Net Metering Plan instead.",
     "peakWindow": "weekdays noon–8pm",
     "demand": { "peakSummer": 30.68, "peakWinter": 23.60, "off": 10.06 },
     "customer": 16.33

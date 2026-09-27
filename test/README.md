@@ -42,6 +42,8 @@ The automated test suite covers:
 9. **ZIP Errors** — non-zip input and truncated archives rejected gracefully
 10. **Plan Inventory & Metadata** — all four SC1 residential plans exist with exact ConEd display names (Steady Use carrying its former name "Select Pricing Plan"), pricing basis, eligibility, rates-as-of dates, and ConEd source links; `rates.json` mirrors the metadata and merges it through `applyRates()`
 11. **Plan-by-Plan Comparison** — `analyze().comparison` ranks every priced plan cheapest-first with annualized cost, delta vs Standard, current/estimate flags, and metadata; months-only input (no interval data) correctly shrinks the comparison to the two energy plans
+12. **Eligibility & Lock-in Engine** — `checkEligibility()` applies ConEd's published rules to a declared profile: smart-meter/interval-data gates on the demand plans, current-plan exclusion from switch candidates, solar fit guidance, ESCO supply caveat and TOU-commitment exemption, heat-pump price guarantee, the one-year TOU commitment and 18-month rejoin block, the 18-month demand-plan re-enrollment block, and SC1/NYC-Westchester territory gates (blockers flag the whole analysis as reference-only)
+13. **Rule Data Mirroring** — `rates.json` carries the same `requires`/`lockIn`/solar rules as the `calc.js` defaults, so the runtime override path can update rules with no code change
 
 ## Fixture Data
 

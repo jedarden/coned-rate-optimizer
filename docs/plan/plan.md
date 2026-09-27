@@ -128,3 +128,76 @@ live in this session — cluster/deploy-pipeline changes go through
   drift check, FAQ schema, analytics, EV modeling) will actually reach
   `coned.jedarden.com` on merge instead of requiring a manual deploy
   reminder.
+
+## ADR-002: 2026-09-27 — Eligibility & lock-in rules as overridable data, applied by a pure engine in calc.js
+
+### Context
+
+The product strategy's customer journey begins with a "location/account
+eligibility check" and its paid result promises "exact rate name and
+eligibility notes" plus "switching timing and lock-in warning" (technical gap
+#3: an eligibility engine). Until v1.7.0 the tool priced all four SC1 plans
+unconditionally: every plan was `avail: true`, Standard was hardcoded as the
+current plan, and ConEd's published enrollment terms (TOU's one-year
+commitment and 18-month rejoin block, the demand plans' 18-month
+re-enrollment block, their smart-meter requirement, ConEd's solar guidance)
+appeared nowhere.
+
+The rules were verified against the coned.com plan pages via Wayback Machine
+snapshots (2026-06-17 TOU, 2026-07-03 Steady Use, 2026-05-20 Smart Energy) —
+coned.com itself Akamai-blocks every fetch path from this environment.
+
+### Decision
+
+1. **The rules live as data on each plan** in `RATES` (`requires`,
+   `lockIn`, `solar`, `smartChargeConflict`), mirrored in `rates.json` like
+   every other plan attribute, so ConEd term changes are an edit + redeploy,
+   not a code change. Notes quote/track ConEd's published wording so the UI
+   never invents terms.
+2. **A pure `checkEligibility(profile, ctx)` engine in calc.js** turns a
+   declared profile (territory, service class, meter, current plan, solar,
+   ESCO, heat pump — all optional with defaults matching the home the rate
+   data assumes) into per-plan verdicts. It emits whole-analysis blockers
+   (non-ConEd territory, non-SC1 account), global notes (Westchester pricing
+   caveat, ESCO supply caveat), and per-plan notes (lock-in, seasonality,
+   price guarantee, fit guidance).
+3. **Excluded plans stay visible.** They keep their priced estimate and rank
+   last in the comparison with a "not eligible" reason, but are never the
+   switch target and never drive the verdict. Hiding them would hide the
+   reason a cheaper-looking number doesn't apply; dropping them would hide
+   that the plan exists.
+4. **Solar is advisory, not exclusionary.** ConEd's own words are "likely not
+   a good fit" / "do not recommend" — the engine surfaces that guidance as a
+   note rather than pretending ConEd forbids it.
+5. **`analyze()` generalizes the current plan** (it was hardcoded Standard):
+   `cheapest` keeps its old meaning (cheapest available, including the
+   current plan — the "Best plan" stat), and a new `switchTarget` is the best
+   eligible plan you're not on. `savingsIfSwitch` is now measured from the
+   declared current plan; with the default profile the numbers are unchanged.
+
+### Alternatives Considered
+
+1. **Hard-exclude solar homes from the demand plans.** Rejected: overstates
+   ConEd's guidance and silently shrinks the comparison.
+2. **Drop excluded plans from the output entirely.** Rejected: the customer
+   can't tell "not worth it" from "not allowed", and the reason is the
+   trust signal the strategy asks for.
+3. **A wizard-style gate before upload** (ask territory/account before the
+   file, like the strategy's funnel). Rejected for the prototype: the local
+   upload flow has no account identity anyway; declared-profile gating after
+   analysis delivers the same protection with zero funnel friction. The
+   Phase-2 Green Button Connect flow is the right place for a hard front gate.
+
+### Consequences
+
+- **Positive**: the verdict can no longer recommend a plan the customer
+  can't switch to; lock-in/timing costs are visible at decision time; rules
+  update without code; the CLI (`verify.js`) and the browser share the same
+  engine and notes.
+- **Negative / cost**: seven more profile inputs to maintain and test; the
+  engine's notes are English sentences assembled from data, so rewording a
+  rule needs care (tests assert on key phrases).
+- **Follow-up**: EVTOU — the archived TOU page steers residential EV owners
+  to a dedicated EV rate while this repo's FAQ calls EVTOU commercial-only;
+  reconcile when coned.com is reachable again. Agentation on this page is
+  tracked separately (conedrat-341ced52).

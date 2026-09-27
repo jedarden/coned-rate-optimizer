@@ -47,10 +47,20 @@ function analyzeText(text) {
     const cost = `$${e.annualCost.toFixed(0)}/yr`;
     const basis = e.basis + (e.estimate ? " estimate" : "");
     const delta = e.current ? "current plan"
-      : `${e.deltaAnnual >= 0 ? "+" : "-"}$${Math.abs(e.deltaAnnual).toFixed(0)}/yr vs Standard`;
+      : (!e.avail ? `NOT ELIGIBLE — ${e.excludedReason}`
+      : `${e.deltaAnnual >= 0 ? "+" : "-"}$${Math.abs(e.deltaAnnual).toFixed(0)}/yr vs Standard`);
     console.log(`  ${i + 1}. ${label} — ${cost} [${basis}] ${delta}`);
     console.log(`     eligibility: ${e.eligibility} · rates: ${e.ratesAsOf}`);
+    (e.eligibilityNotes || []).forEach((n) => console.log(`     note: ${n}`));
   });
+  if (a.eligibility.notes.length) {
+    console.log(`\neligibility notes:`);
+    a.eligibility.notes.forEach((n) => console.log(`  - ${n}`));
+  }
+  if (a.eligibility.blockers.length) {
+    console.log(`\neligibility blockers (results are reference only):`);
+    a.eligibility.blockers.forEach((b) => console.log(`  ! ${b}`));
+  }
 }
 
 // Same sniffing order as the browser (app.js): zip by magic bytes, then CSV-vs-XML auto-detect.

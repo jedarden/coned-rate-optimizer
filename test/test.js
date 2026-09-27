@@ -369,7 +369,7 @@ async function runFormatTests() {
       `Steady Use carries its former name ("${calc.RATES.steadyUse.formerly}")`);
     assert(calc.RATES.steadyUse.basis === "demand" && calc.RATES.smartEnergy.basis === "demand",
       "Steady Use & Smart Energy are demand-based");
-    assert(calc.RATES.meta.version === "1.6.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
+    assert(calc.RATES.meta.version === "1.7.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
     console.log("");
   } catch (e) {
     console.log(`  ✗ Plan inventory tests failed: ${e.message}`);
@@ -414,6 +414,133 @@ async function runFormatTests() {
     console.log("");
   } catch (e) {
     console.log(`  ✗ Comparison output tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 12: eligibility & lock-in engine — location, account, meter, current-plan,
+  // fit (solar/ESCO), enrollment timing, and lock-in rules gate the switch verdict.
+  console.log("Test 12: Eligibility & lock-in engine");
+  try {
+    const csvText = fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.csv"), "utf8");
+    const parsed = calc.parseGreenButton(csvText);
+    const notesOf = (a, key) => {
+      const p = a.plans.find((x) => x.key === key);
+      return p ? p.eligibilityNotes.join(" ") : "";
+    };
+
+    // default profile: SC1 · NYC · smart meter · on Standard — nothing excluded
+    const a0 = calc.analyze(parsed);
+    assert(a0.eligibility && a0.eligibility.blockers.length === 0, "Default profile has no blockers");
+    assert(a0.plans.every((p) => p.avail), "Default profile leaves every plan available");
+    assert(a0.plans.find((p) => p.key === "standard").current === true, "Default current plan is Standard");
+    assert(!!a0.switchTarget && a0.switchTarget.key !== "standard", "Switch target is an alternative, not the current plan");
+    assert(a0.recommendation.includes("Stay on Standard"), "Default verdict stays on Standard for the peak-heavy fixture");
+    assert(/18 months/.test(notesOf(a0, "tou")) && /one-year/.test(notesOf(a0, "tou")),
+      "TOU carries its one-year commitment and 18-month rejoin lock-in notes");
+    assert(/18 months/.test(notesOf(a0, "steady")) && /18 months/.test(notesOf(a0, "smart")),
+      "Both demand plans carry the 18-month re-enrollment lock-in note");
+    assert(!/Lock-in:/.test(notesOf(a0, "standard")), "Standard (no lock-in) carries no lock-in note");
+
+    // current-plan = TOU: TOU becomes the baseline and Standard becomes the switch candidate
+    const aTou = calc.analyze(parsed, { profile: { currentPlan: "tou" } });
+    assert(aTou.plans.find((p) => p.key === "tou").current === true, "Declared current plan (TOU) is flagged current");
+    assert(aTou.switchTarget.key === "standard", "Standard becomes the switch candidate for a TOU home");
+    assert(aTou.savingsIfSwitch > 1, "TOU home on the peak-heavy fixture saves by switching back to Standard");
+    assert(aTou.recommendation.includes("Switch to Standard"), "Verdict tells the TOU home to switch back");
+    assert(!/one-year commitment|Lock-in/.test(notesOf(aTou, "tou")), "Current plan is not pitched switch terms");
+
+    // meter gate: a traditional (non-AMI) meter excludes both demand plans
+    const aLegacy = calc.analyze(parsed, { profile: { meter: "legacy" } });
+    const legacyExcluded = aLegacy.plans.filter((p) => p.key === "steady" || p.key === "smart");
+    assert(legacyExcluded.every((p) => p.avail === false), "Legacy meter excludes both demand plans");
+    assert(legacyExcluded.every((p) => /smart meter/i.test(p.excludedReason)),
+      "Exclusion reason names the smart-meter requirement");
+    assert(aLegacy.comparison.length === 4, "Excluded demand plans stay visible in the comparison");
+    assert(aLegacy.comparison.slice(-2).every((e) => !e.avail), "Excluded plans rank last in the comparison");
+    assert(aLegacy.plans.filter((p) => p.avail).every((p) => p.basis === "energy"),
+      "Only energy plans remain switch candidates for a legacy meter");
+
+    // meter gate via data: months-only input can't price demand plans either
+    const aMo = calc.analyze({ months: parsed.months, ndays: parsed.ndays });
+    assert(aMo.eligibility.verdicts.steady.available === false &&
+           /interval data/.test(aMo.eligibility.verdicts.steady.reason),
+      "Months-only input gates demand plans on missing interval data");
+
+    // solar: advisory notes on the demand plans, no exclusion
+    const aSolar = calc.analyze(parsed, { profile: { solar: true } });
+    assert(aSolar.plans.filter((p) => p.key === "steady" || p.key === "smart").every((p) => p.avail),
+      "Solar doesn't hard-exclude the demand plans (ConEd's guidance is advisory)");
+    assert(/solar/i.test(notesOf(aSolar, "steady")) && /solar|Net Metering/i.test(notesOf(aSolar, "smart")),
+      "Solar homes get ConEd's demand-plan fit guidance");
+
+    // ESCO supply: TOU commitment exemption + supply-side caveat
+    const aEsco = calc.analyze(parsed, { profile: { esco: true } });
+    assert(/ESCO/.test(notesOf(aEsco, "tou")) && /exempt/.test(notesOf(aEsco, "tou")),
+      "ESCO homes are told the TOU one-year commitment doesn't apply");
+    assert(aEsco.eligibility.notes.some((n) => /ESCO/.test(n) && /contract price/.test(n)),
+      "ESCO supply caveat explains the supply estimate doesn't apply");
+
+    // heat pump: unlocks the 12-month Steady Use price-guarantee note
+    const aHp = calc.analyze(parsed, { profile: { heatPump: true } });
+    assert(/price guarantee/.test(notesOf(aHp, "steady")), "Heat-pump homes see the 12-month price guarantee");
+
+    // SmartCharge conflict: switching to Steady Use unenrolls you from SmartCharge NY
+    const aSc = calc.analyze(parsed, { smartChargeNY: true });
+    assert(/SmartCharge/.test(notesOf(aSc, "steady")),
+      "EV what-if flags the Steady Use ↔ SmartCharge conflict");
+    assert(!/SmartCharge unenroll|automatically unenrolls/.test(notesOf(a0, "steady")),
+      "No SmartCharge conflict note when the EV option is off");
+
+    // account gate: non-SC1 blocks every plan
+    const aSc2 = calc.analyze(parsed, { profile: { serviceClass: "SC2" } });
+    assert(aSc2.eligibility.blockers.length > 0, "Non-SC1 account raises a blocker");
+    assert(aSc2.plans.every((p) => p.avail === false), "Non-SC1 account excludes every plan");
+    assert(aSc2.savingsIfSwitch === 0, "No switch savings claimed for an out-of-scope account");
+
+    // location gates
+    const aOut = calc.analyze(parsed, { profile: { territory: "outside" } });
+    assert(aOut.eligibility.blockers.length > 0 && aOut.plans.every((p) => p.avail === false),
+      "Non-ConEd territory raises a blocker and excludes every plan");
+    const aW = calc.analyze(parsed, { profile: { territory: "westchester" } });
+    assert(aW.eligibility.blockers.length === 0 && aW.plans.every((p) => p.avail),
+      "Westchester is in-territory (no exclusions)");
+    assert(aW.eligibility.notes.some((n) => /Westchester/.test(n)),
+      "Westchester gets the NYC-pricing caveat");
+
+    // the comparison surface carries the engine's output too
+    const steadyEntry = a0.comparison.find((e) => e.key === "steady");
+    assert(steadyEntry.avail === true && Array.isArray(steadyEntry.eligibilityNotes) && steadyEntry.lockIn,
+      "Comparison entries carry avail, eligibilityNotes, and lockIn");
+    const legacyEntry = aLegacy.comparison.find((e) => e.key === "smart");
+    assert(legacyEntry.avail === false && !!legacyEntry.excludedReason,
+      "Comparison entries carry the exclusion reason");
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Eligibility engine tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 13: rule data mirroring — rates.json must carry the same eligibility/lock-in
+  // rules as calc.js defaults (the runtime override path).
+  console.log("Test 13: Eligibility rule data mirrors rates.json");
+  try {
+    const ratesJson = JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8"));
+    const PLAN_KEYS = ["standard", "tou", "steadyUse", "smartEnergy"];
+    PLAN_KEYS.forEach((k) => {
+      const c = calc.RATES[k], j = ratesJson[k];
+      assert(JSON.stringify(c.requires) === JSON.stringify(j.requires),
+        `rates.json requires-rules mirror calc.js for ${k}`);
+      assert(JSON.stringify(c.lockIn) === JSON.stringify(j.lockIn),
+        `rates.json lockIn rules mirror calc.js for ${k}`);
+      assert((c.solar || null) === (j.solar || null), `rates.json solar note mirrors calc.js for ${k}`);
+    });
+    assert(ratesJson.meta.switchTiming === calc.RATES.meta.switchTiming,
+      "rates.json carries the switch-timing note");
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Rule-mirroring tests failed: ${e.message}`);
     testsFailed++;
     console.log("");
   }

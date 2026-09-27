@@ -15,7 +15,8 @@ the month-over-month bill experience, is documented in
 
 - Parses ConEd Green Button interval exports entirely in-browser — **CSV/TSV**, **XML (ESPI)**, or the **raw `.zip`** exactly as ConEd delivers it (see [Import formats](#import-formats--green-button-connect)).
 - Prices your usage under **every currently-eligible SC1 residential plan**: Standard, Time-of-Use, and the demand-based Steady Use Rate (formerly the "Select Pricing Plan") and Smart Energy Plan.
-- Shows the verdict (stay / switch + $), a ranked **plan-by-plan comparison** — each plan with its exact ConEd display name, pricing basis (energy vs demand), eligibility, and the date its rates were last verified (demand-based plans are flagged as estimates) — plus your peak/off-peak load shape and a monthly bar chart.
+- Applies **ConEd's published eligibility, enrollment-timing, and lock-in rules** (see [Eligibility & lock-in rules](#eligibility--lock-in-rules)) to your declared situation — service area, current plan, meter, solar, ESCO supply, heat pump — and excludes plans that aren't valid alternatives for you, with the reason shown.
+- Shows the verdict (stay / switch + $), a ranked **plan-by-plan comparison** — each plan with its exact ConEd display name, pricing basis (energy vs demand), eligibility, switch terms, and the date its rates were last verified (demand-based plans are flagged as estimates) — plus your peak/off-peak load shape and a monthly bar chart.
 - Honest by design: for most (peak-heavy) NYC homes it will say **"stay on Standard."**
 
 ## Import formats & Green Button Connect
@@ -30,6 +31,29 @@ All parsing happens in the browser (`public/calc.js`); files never leave the dev
 
 Malformed input fails with a specific, human-readable error (wrong export type, no
 interval data, corrupt/unsupported zip, XML with no readings) — never a raw stack trace.
+
+## Eligibility & lock-in rules
+
+A switch only counts if ConEd will actually let you make it. The eligibility engine
+(`checkEligibility()` in `public/calc.js`) gates every plan on the facts you declare in
+"Your situation" (all optional — defaults describe an SC1 · NYC · smart-meter home on
+Standard) and marks plans that aren't valid alternatives, with the reason:
+
+| Check | Rule applied | ConEd's published terms |
+|---|---|---|
+| Location | ConEd electric territory only; Westchester results are flagged directional | Rates are priced on ConEd's published **NYC SC1 averages**; Westchester delivery rates differ |
+| Account | SC1 residential only | The tool models ConEd's SC1 (Rate I) residential plans; anything else is reference-only |
+| Meter | Both demand plans require a smart meter + hourly interval data | *"Any Con Edison customer with a smart meter can enroll in the Steady Use Rate"*; *"Anyone with a smart meter installed in their home can participate in the Smart Energy Plan"* |
+| Current plan | Your declared plan is the baseline, never a switch candidate | — |
+| Fit | Solar / net-metering homes get ConEd's demand-plan caution (advisory, not an exclusion); ESCO homes get a supply-side caveat; EV what-if flags that Steady Use enrollment auto-unenrolls you from SmartCharge NY | *"If you have solar or net metering, you are likely not a good fit for the Steady Use Rate"*; *"We do not recommend this plan for solar customers"* (Smart Energy); ESCO customers are billed supply at their ESCO contract price |
+| Enrollment timing | Switches take effect with a future meter read; TOU peak prices are seasonal | ConEd bills TOU summer (Jun–Sep) peak supply at a higher rate than the rest of the year |
+| Lock-in | TOU: one-year commitment, 18-month rejoin block; demand plans: cancel anytime, 18-month re-enrollment block; heat-pump homes see the Steady Use 12-month price guarantee | *"After you switch to the Time-of-Use Rate, you must stay enrolled for one year unless you get your energy from an energy service company. If you switch back to the Standard Residential Rate, you cannot rejoin the Time-of-Use Rate for 18 months."*; *"You can cancel anytime without penalty but won't be able to reenroll for 18 months after opting out."* (both demand plans); *"If you have a heat pump and are new to the plan, you're eligible for the 12-month price guarantee"* |
+
+ConEd quotes were verified against the coned.com plan pages (TOU page archived
+2026-06-17, Steady Use 2026-07-03, Smart Energy 2026-05-20). The rules are data on each
+plan (`requires`, `lockIn`, `solar`, `smartChargeConflict`), mirrored in `rates.json` so
+they can be updated with no code change when ConEd's terms change. Excluded plans stay
+visible in the comparison with their reason — they're just never recommended.
 
 **Green Button Connect (account authorization) is not available in this tool.**
 Connecting directly to a ConEd account requires ConEd's third-party onboarding and

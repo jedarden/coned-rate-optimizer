@@ -18,7 +18,20 @@
     if (window._cf && window._cf.event) { window._cf.event('parse_error'); }
   }
 
-  function calcOptions() { return { smartChargeNY: !!(evToggle && evToggle.checked) }; }
+  // The declared facts the eligibility engine gates on (all optional; calc.js defaults apply
+  // to anything unset). Everything stays on-device like the rest of the analysis.
+  function profileOptions() {
+    return {
+      territory: $("pf-territory") ? $("pf-territory").value : undefined,
+      currentPlan: $("pf-plan") ? $("pf-plan").value : undefined,
+      meter: $("pf-meter") ? $("pf-meter").value : undefined,
+      solar: !!( $("pf-solar") && $("pf-solar").checked ),
+      esco: !!( $("pf-esco") && $("pf-esco").checked ),
+      heatPump: !!( $("pf-heatpump") && $("pf-heatpump").checked )
+    };
+  }
+
+  function calcOptions() { return { smartChargeNY: !!(evToggle && evToggle.checked), profile: profileOptions() }; }
 
   function monthCost(m, smartCharge) {
     var std = m.total * R.standard.allIn + R.standard.customer;
@@ -54,9 +67,14 @@
       return '<tr><td>' + l.label + '</td><td class="det">' + l.detail + '</td><td class="num">' + usd(l.amount * factor) + '/yr</td></tr>';
     }).join("");
     return '<div class="mplan"><div class="mh">' + p.name + ' · <strong>' + usd(p.cost * factor) + '/yr</strong>' +
+      (p.current ? ' <span class="pill">current</span>' : '') +
+      (p.avail === false ? ' <span class="tag warn">not eligible: ' + p.excludedReason + '</span>' : '') +
       (p.formerly ? ' <span class="tag">formerly ' + p.formerly + '</span>' : '') +
       (p.demand ? ' <span class="tag">demand estimate</span>' : '') +
-      (p.ratesAsOf ? ' <span class="tag">' + p.ratesAsOf + '</span>' : '') + '</div>' +
+      (p.ratesAsOf ? ' <span class="tag">' + p.ratesAsOf + '</span>' : '') +
+      (p.eligibilityNotes && p.eligibilityNotes.length ? '<ul class="pnotes">' +
+        p.eligibilityNotes.map(function (n) { return '<li>' + n + '</li>'; }).join("") + '</ul>' : '') +
+      '</div>' +
       '<table class="mtab"><tbody>' + lines + '</tbody></table></div>';
   }
 
@@ -71,7 +89,7 @@
     g.fillStyle = save ? "#4ad08a" : "#e0a05a"; g.font = "800 92px " + F;
     g.fillText(save ? "Save " + usd(a.savingsIfSwitch * a.annualFactor) + "/yr" : "Stay on Standard", 70, 240);
     g.fillStyle = "#e8eaed"; g.font = "400 32px " + F;
-    g.fillText(save ? "by switching to " + a.cheapest.name : "no ConEd plan switch lowers this bill", 70, 300);
+    g.fillText(save ? "by switching to " + (a.switchTarget ? a.switchTarget.name : a.cheapest.name) : "no ConEd plan switch lowers this bill", 70, 300);
     g.font = "400 30px " + F; var y = 392;
     a.plans.forEach(function (p) {
       g.fillStyle = "#9aa4b2"; g.textAlign = "left"; g.fillText(p.name + (p.demand ? " (est.)" : ""), 70, y);
@@ -100,29 +118,44 @@
     var saves = a.savingsIfSwitch > 1;                 // >$1 to avoid rounding noise
     var vClass = saves ? "good" : "warn";
     var period = (a.ndays >= 350 && a.ndays <= 385) ? "over the past year" : "over " + a.ndays + " days (annualized)";
+    var curEntry = a.plans.filter(function (p) { return p.current; })[0] || a.plans[0];
+    var curName = curEntry.short || curEntry.name;
+
+    // eligibility blockers (wrong territory / account class) — the numbers stay on screen
+    // but are flagged as not actionable
+    var blockerNote = a.eligibility.blockers.length
+      ? '<p class="opp">' + a.eligibility.blockers.map(function (b) { return '⚠ ' + b; }).join('<br>') + '</p>' : '';
 
     // verdict
     var vHtml;
     if (saves) {
       vHtml = '<h2>You could lower your bill 🎉</h2>' +
         '<div class="big">Save ' + usd(a.savingsIfSwitch * a.annualFactor) + '/yr</div>' +
-        '<p>Switching to <strong>' + a.cheapest.name + '</strong> would cost less than your current Standard plan, based on your actual usage ' + period + '.</p>';
-    } else {
+        '<p>Switching to <strong>' + a.switchTarget.name + '</strong> would cost less than your current ' + curEntry.name + ' plan, based on your actual usage ' + period + '.</p>';
+    } else if (curEntry.key === "standard") {
       vHtml = '<h2>Stay on Standard</h2>' +
         '<div class="big">' + signed(a.touDeltaAnnual) + '/yr on TOU</div>' +
         '<p>No plan switch lowers your bill. Time-of-Use would actually cost you <strong>' + signed(a.touDeltaAnnual) + '/year more</strong>, because ' +
         a.peakPct.toFixed(0) + '% of your usage falls in peak hours (8am–midnight). Rate-switching only helps off-peak-heavy homes.</p>';
+    } else {
+      vHtml = '<h2>Stay on ' + curName + '</h2>' +
+        '<div class="big">no eligible switch saves</div>' +
+        '<p>Based on your actual usage ' + period + ', none of the plans you\'re eligible to switch to would lower your bill.</p>';
     }
 
-    // plan table — Standard + TOU are precise; demand plans are flagged estimates
+    // plan table — Standard + TOU are precise; demand plans are flagged estimates;
+    // ineligible plans stay visible but are marked and excluded from the verdict
     var rows = a.plans.map(function (p) {
       var d = p.cost - a.standardCost;
       var deltaCell = p.current ? '<span class="pill">current</span>'
-        : '<span class="' + (d > 0 ? "delta-up" : "delta-down") + '">' + signed(d * a.annualFactor) + '/yr</span>';
+        : (p.avail === false ? '<span class="pill na">not eligible</span>'
+        : '<span class="' + (d > 0 ? "delta-up" : "delta-down") + '">' + signed(d * a.annualFactor) + '/yr</span>');
       var tag = p.demand ? ' <span class="tag">demand-based est. · ' + p.eligibility + '</span>'
         : (p.smartChargeNY && p.smartChargeNY.enabled ? ' <span class="tag">includes SmartCharge NY what-if</span>' : '');
+      if (p.avail === false) tag += ' <span class="tag warn">' + p.excludedReason + '</span>';
       if (p.formerly) tag += ' <span class="tag">formerly ' + p.formerly + '</span>';
-      return '<tr' + (p.current ? ' class="current"' : (p.demand ? ' class="est"' : '')) + '><td>' + p.name + tag + '</td>' +
+      var rowClass = p.current ? "current" : (p.avail === false ? "na" : (p.demand ? "est" : ""));
+      return '<tr' + (rowClass ? ' class="' + rowClass + '"' : '') + '><td>' + p.name + tag + '</td>' +
         '<td class="num">' + usd(p.cost * a.annualFactor) + '/yr</td><td class="num">' + deltaCell + '</td></tr>';
     }).join("");
     var evTableLine = a.smartChargeNY.enabled
@@ -131,10 +164,21 @@
         '<td class="num"><span class="tag">included in TOU</span></td></tr>' : '';
     var demandNote = a.demandOpportunity
       ? '<p class="opp">⚠ Your load looks flat enough that demand-based plans (Steady Use / Smart Energy) come out cheaper in this estimate. But that estimate holds supply flat — ConEd applies time-of-use supply on those plans, which isn\'t published exactly — so treat it as a ballpark worth confirming with ConEd, not a guarantee.</p>'
-      : (a.hasDemand ? '<p class="legend">Demand-based plans bill on your peak kW (not total kWh) — ballpark estimates (supply held flat), best for heat-pump / flat-demand homes.</p>' : '');
+      : (a.hasDemand ? '<p class="legend">Demand-based plans bill on your peak kW (not total kWh) — ballpark estimates (supply held flat), best for heat-pump / flat-demand homes.</p>'
+      : '<p class="legend">Steady Use & Smart Energy aren\'t priced: they bill on peak kW, which only a smart meter\'s hourly interval data can show — and your file has none. ' + (a.profile.meter === "legacy" ? "A traditional meter can't bill on demand at all." : "Export the hourly Green Button data to see them.") + '</p>');
     var evNote = a.smartChargeNY.enabled
       ? '<p class="legend">SmartCharge NY what-if: ' + (R.smartChargeNY.offPeakCredit * 100).toFixed(0) + '¢/kWh for midnight–8am charging is applied to all measured off-peak kWh. Con Edison currently says Residential Time-of-Use customers are not eligible, so verify eligibility before relying on this combined estimate.</p>'
       : '<p class="legend">No separate residential EV rate — residential EVs are priced on the regular plans. Turn on the EV option above to see the SmartCharge NY off-peak incentive scenario.</p>';
+
+    // per-plan eligibility, timing & lock-in notes from the rules engine
+    var noteEntries = a.comparison.filter(function (e) { return e.eligibilityNotes && e.eligibilityNotes.length; });
+    var notesHtml = noteEntries.length
+      ? '<h3 class="sec">Eligibility notes &amp; switching terms</h3><ul class="pnotes">' +
+        noteEntries.map(function (e) {
+          return '<li><strong>' + e.name + '</strong> — <ul>' +
+            e.eligibilityNotes.map(function (n) { return '<li>' + n + '</li>'; }).join("") + '</ul></li>';
+        }).join("") + '</ul>'
+      : "";
 
     // load shape
     var pk = a.peakPct, of = 100 - pk;
@@ -145,16 +189,17 @@
     results.innerHTML =
       '<div class="verdict ' + vClass + '">' + vHtml + '</div>' +
       '<div class="actions"><button id="share-btn" class="btn-share" type="button">↗ Share this result</button></div>' +
-      (stalenessWarning || '') +
+      (stalenessWarning || '') + blockerNote +
       '<div class="stats">' +
         '<div class="stat"><div class="k">Your usage</div><div class="v">' + Math.round(a.totalKwh * a.annualFactor).toLocaleString() + ' kWh/yr</div></div>' +
-        '<div class="stat"><div class="k">Current plan (Standard)</div><div class="v">' + usd(a.standardAnnual) + '/yr</div></div>' +
+        '<div class="stat"><div class="k">Current plan (' + curName + ')</div><div class="v">' + usd(curEntry.cost * a.annualFactor) + '/yr</div></div>' +
         '<div class="stat"><div class="k">Best plan</div><div class="v">' + (a.cheapest.short || a.cheapest.name) + '</div></div>' +
       '</div>' +
+      (a.eligibility.notes.length ? '<p class="legend">' + a.eligibility.notes.join(' ') + '</p>' : '') +
       (label ? '<p class="legend">Showing: ' + label + '</p>' : '') +
       '<h3 class="sec">Every plan, priced on your usage</h3>' +
       '<table><thead><tr><th>Rate plan</th><th class="num">Annual cost</th><th class="num">vs. Standard</th></tr></thead>' +
-      '<tbody>' + rows + evTableLine + '</tbody></table>' + demandNote + evNote +
+      '<tbody>' + rows + evTableLine + '</tbody></table>' + demandNote + evNote + notesHtml +
       '<details class="math"><summary>Show the math — line items on your numbers</summary>' +
         a.plans.map(function (p) { return planMath(p, a.annualFactor); }).join("") +
         '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
@@ -214,6 +259,18 @@
   });
   if (evToggle) evToggle.addEventListener("change", function () {
     if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
+  });
+  // Declared eligibility facts (territory, current plan, meter, solar, ESCO, heat pump) —
+  // any change re-runs the rules engine and re-renders.
+  ["pf-territory", "pf-plan", "pf-meter"].forEach(function (id) {
+    var el = $(id); if (el) el.addEventListener("change", function () {
+      if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
+    });
+  });
+  ["pf-solar", "pf-esco", "pf-heatpump"].forEach(function (id) {
+    var el = $(id); if (el) el.addEventListener("change", function () {
+      if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
+    });
   });
 
   // Show version on load (for bug reports)
