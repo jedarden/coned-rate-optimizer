@@ -722,6 +722,96 @@ async function runFormatTests() {
     testsFailed++;
     console.log("");
   }
+
+  // Test 16: demand-plan pricing — the Steady Use & Smart Energy schedules bill
+  // delivery on the average of the three highest hourly demands per month (peak
+  // window: weekdays noon–8pm, seasonally split), hold supply + surcharges at the
+  // standard flat non-delivery rate, and add the plan's customer charge per month.
+  console.log("Test 16: Demand-plan pricing (Steady Use & Smart Energy schedules)");
+  try {
+    // Self-sufficient rate state: restore rates.json over the defaults (Test 5's
+    // allIn override leaves the derived fields stale until Test 10 restores them).
+    calc.applyRates(JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8")));
+    const SU = calc.RATES.steadyUse, SE = calc.RATES.smartEnergy, STD = calc.RATES.standard;
+    const nonDelivery = STD.allIn - STD.delivery;
+    assert(SU.peakStart === 12 && SU.peakEnd === 20 && SE.peakStart === 12 && SE.peakEnd === 20,
+      "both demand schedules publish the weekdays-noon–8pm peak window this test prices against");
+
+    // Hand-built two-month dataset whose top-3 averages are readable constants:
+    // July (summer): peak 9,7,5,1,1 → 7 kW; off 4,2,1,0.5 → 7/3 kW.
+    // January (winter): peak 6,4,2,1 → 4 kW; off 3,2,1,0.5 → 2 kW.
+    const hr = (ym, mo, hour, weekday, kwh) => ({ ym, mo, hour, weekday, kwh });
+    const demandHours = [
+      hr("2026-07", 7, 12, 3, 9), hr("2026-07", 7, 13, 3, 7), hr("2026-07", 7, 14, 3, 5),
+      hr("2026-07", 7, 15, 3, 1), hr("2026-07", 7, 16, 3, 1),
+      hr("2026-07", 7, 2, 3, 4), hr("2026-07", 7, 3, 3, 2), hr("2026-07", 7, 4, 3, 1), hr("2026-07", 7, 5, 3, 0.5),
+      hr("2027-01", 1, 12, 4, 6), hr("2027-01", 1, 13, 4, 4), hr("2027-01", 1, 14, 4, 2), hr("2027-01", 1, 15, 4, 1),
+      hr("2027-01", 1, 2, 4, 3), hr("2027-01", 1, 3, 4, 2), hr("2027-01", 1, 4, 4, 1), hr("2027-01", 1, 5, 4, 0.5),
+    ];
+    const kwhTotal = demandHours.reduce((s, h) => s + h.kwh, 0);
+    assertClose(kwhTotal, 50, 1e-9, "fixture sanity: the demand dataset totals 50 kWh");
+
+    const dLine = (r) => r.lines.find((l) => l.label === "Delivery (demand-based)");
+    [["Steady Use", SU], ["Smart Energy", SE]].forEach(([label, plan]) => {
+      const r = calc.costDemand(demandHours, plan);
+      // Top-3 averages are literals; the seasonal rates come from the schedule under test.
+      const expDelivery = 7 * plan.demand.peakSummer + (7 / 3) * plan.demand.off
+        + 4 * plan.demand.peakWinter + 2 * plan.demand.off;
+      assertClose(dLine(r).amount, expDelivery, 1e-6,
+        `${label}: delivery = seasonal top-3 kW × the plan's $/kW rates`);
+      assertClose(r.lines.find((l) => l.label === "Supply + surcharges (flat est.)").amount,
+        kwhTotal * nonDelivery, 1e-6, `${label}: supply + surcharges held at the standard flat rate`);
+      assertClose(r.lines.find((l) => l.label === "Basic service charge").amount,
+        2 * plan.customer, 1e-6, `${label}: customer charge per month of data`);
+      assertClose(r.total, expDelivery + kwhTotal * nonDelivery + 2 * plan.customer, 1e-6,
+        `${label}: total = delivery + flat supply + customer charge`);
+      assert(r.lines.length === 3, `${label}: itemized into 3 line items`);
+    });
+
+    // The peak window's edges: noon (peakStart) is inclusive, 8pm (peakEnd) is
+    // exclusive, and weekends never bill at the peak rate — misplacing any of the
+    // three moves the delivery line by hundreds of dollars.
+    const edgeHours = [
+      hr("2026-07", 7, 19, 3, 6),   // weekday 7pm → peak
+      hr("2026-07", 7, 20, 3, 60),  // weekday 8pm → off (peakEnd is exclusive)
+      hr("2026-07", 7, 11, 3, 5),   // weekday 11am → off (before peakStart)
+      hr("2026-07", 7, 12, 3, 4),   // weekday noon → peak (peakStart is inclusive)
+      hr("2026-07", 7, 13, 6, 50),  // Saturday 1pm → off (weekends are never peak)
+    ];
+    const expEdge = 5 * SU.demand.peakSummer + ((60 + 50 + 5) / 3) * SU.demand.off;
+    assertClose(dLine(calc.costDemand(edgeHours, SU)).amount, expEdge, 1e-6,
+      "peak-window edges: noon in, 8pm out, weekends out");
+
+    // End to end: on a flat, heavy load both demand plans undercut both energy
+    // plans, so the verdict itself names one — flagged as the estimate it is.
+    const flatHours = [], flatMonths = [];
+    [["2026-07", 7, true], ["2027-01", 1, false]].forEach(([ym, mo, summer]) => {
+      for (let i = 0; i < 500; i++) flatHours.push(hr(ym, mo, i % 12, 1 + (i % 5), 4)); // 2000 kWh off-peak
+      flatHours.push(hr(ym, mo, 12, 1, 1), hr(ym, mo, 13, 1, 1), hr(ym, mo, 14, 1, 1)); // 1 kW peak
+      flatMonths.push({ ym, mo, summer, total: 2003, peak: 3, off: 2000 });
+    });
+    const aFlat = calc.analyze({ months: flatMonths, hours: flatHours, ndays: 61 });
+    const steadyFlat = aFlat.plans.find((p) => p.key === "steady");
+    const smartFlat = aFlat.plans.find((p) => p.key === "smart");
+    assert(aFlat.hasDemand === true, "interval data prices the demand plans");
+    assertClose(steadyFlat.cost, calc.costDemand(flatHours, SU).total, 1e-9,
+      "analyze()'s Steady Use cost agrees with costDemand()");
+    assert(steadyFlat.cost < smartFlat.cost && smartFlat.cost < aFlat.touCost && aFlat.touCost < aFlat.standardCost,
+      "flat heavy load ranks: Steady Use < Smart Energy < TOU < Standard");
+    assert(aFlat.switchTarget.key === "steady", "switch target is the cheapest eligible plan (Steady Use)");
+    assert(/Switch to Steady Use Rate/.test(aFlat.recommendation),
+      `verdict names the demand plan ("${aFlat.recommendation}")`);
+    assertClose(aFlat.savingsIfSwitch, aFlat.standardCost - steadyFlat.cost, 1e-9,
+      "savings are measured from the current plan to the switch target");
+    assert(aFlat.comparison[0].key === "steady" && steadyFlat.demand === true,
+      "comparison ranks the demand plan first, flagged as a demand entry");
+    assert(aFlat.demandOpportunity === true, "flat-load home is flagged with the demand-opportunity caveat");
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Demand-plan pricing tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
 }
 
 // Summary (printed after the async format tests finish)

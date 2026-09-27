@@ -47,6 +47,7 @@ The automated test suite covers:
 13. **Rule Data Mirroring** — `rates.json` carries the same `requires`/`lockIn`/solar rules as the `calc.js` defaults, so the runtime override path can update rules with no code change
 14. **Bill Reconstruction** — `reconstructBill()` prices a billing period component by component (customer charge, delivery, supply, MAC, RDM, surcharges) and reproduces ConEd's real published bill history to under half a cent at each year's rates; integrity guards re-derive the fixture's published totals; projection rules price uncovered years at the nearest published period and flag them; partial periods, actual-supply overrides, the default customer charge, and bad-input rejection are all covered
 15. **Reconciliation & Accuracy Gate** — `reconcileBill()` compares a modeled period against the actual bill (pass ≤2%, warn ≤5%, fail beyond), names the component driving each miss, and `accuracyGate()` enforces the product-strategy rule that an account is only trusted when ≥95% of its supported periods reconcile within 2% — every miss listed, never averaged away; a $0 actual bill and missing totals are handled without divide-by-zero
+16. **Demand-Plan Pricing** — `costDemand()` prices the Steady Use and Smart Energy schedules on hand-built interval data: the average of the three highest hourly demands per month at each plan's seasonal $/kW rates (summer vs winter), supply + surcharges held at the standard flat non-delivery rate, the customer charge per month, and the weekdays-noon–8pm peak window's edges (noon inclusive, 8pm exclusive, weekends never peak); an end-to-end flat-load analysis confirms the demand plans can win the ranking and that the verdict itself names Steady Use
 
 ## Fixture Data
 
@@ -66,6 +67,7 @@ This fixture provides a minimal but realistic dataset that exercises all core ca
 Using the test fixture:
 - **Standard rate**: ~$48.86 (annualized ~$5,945)
 - **TOU rate**: ~$63.00 (annualized ~$7,665)
+- **Steady Use / Smart Energy**: priced from the fixture's interval data as flagged demand estimates (annualized ~$14,829 / ~$16,640) — well above Standard on this peak-heavy sample, consistent with the verdict
 - **Verdict**: "Stay on Standard" (peak-heavy usage makes TOU more expensive)
 
 Your real data will vary — the tool is designed to give honest recommendations even when switching plans would cost more.
