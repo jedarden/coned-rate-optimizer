@@ -7,6 +7,7 @@ This directory contains automated tests and fixtures for the ConEd Rate Optimize
 - `test/test.js` — Automated test suite for calc.js core functionality
 - `test/fixtures/sample-greenbutton.csv` — Sample Green Button CSV data for testing
 - `test/fixtures/sample-greenbutton.xml` — The same data as a Green Button ESPI Atom feed (epoch seconds in America/New_York, Wh values), for XML tests
+- `test/fixtures/bill-history-sc1-nyc.json` — ConEd's published NYC SC1 bill history (2023–2025, 300 kWh sample month), the ground truth the bill-reconstruction tests reproduce
 
 ## Running Tests
 
@@ -44,6 +45,8 @@ The automated test suite covers:
 11. **Plan-by-Plan Comparison** — `analyze().comparison` ranks every priced plan cheapest-first with annualized cost, delta vs Standard, current/estimate flags, and metadata; months-only input (no interval data) correctly shrinks the comparison to the two energy plans
 12. **Eligibility & Lock-in Engine** — `checkEligibility()` applies ConEd's published rules to a declared profile: smart-meter/interval-data gates on the demand plans, current-plan exclusion from switch candidates, solar fit guidance, ESCO supply caveat and TOU-commitment exemption, heat-pump price guarantee, the one-year TOU commitment and 18-month rejoin block, the 18-month demand-plan re-enrollment block, and SC1/NYC-Westchester territory gates (blockers flag the whole analysis as reference-only)
 13. **Rule Data Mirroring** — `rates.json` carries the same `requires`/`lockIn`/solar rules as the `calc.js` defaults, so the runtime override path can update rules with no code change
+14. **Bill Reconstruction** — `reconstructBill()` prices a billing period component by component (customer charge, delivery, supply, MAC, RDM, surcharges) and reproduces ConEd's real published bill history to under half a cent at each year's rates; integrity guards re-derive the fixture's published totals; projection rules price uncovered years at the nearest published period and flag them; partial periods, actual-supply overrides, the default customer charge, and bad-input rejection are all covered
+15. **Reconciliation & Accuracy Gate** — `reconcileBill()` compares a modeled period against the actual bill (pass ≤2%, warn ≤5%, fail beyond), names the component driving each miss, and `accuracyGate()` enforces the product-strategy rule that an account is only trusted when ≥95% of its supported periods reconcile within 2% — every miss listed, never averaged away; a $0 actual bill and missing totals are handled without divide-by-zero
 
 ## Fixture Data
 

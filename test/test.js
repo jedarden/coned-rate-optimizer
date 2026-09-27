@@ -369,7 +369,7 @@ async function runFormatTests() {
       `Steady Use carries its former name ("${calc.RATES.steadyUse.formerly}")`);
     assert(calc.RATES.steadyUse.basis === "demand" && calc.RATES.smartEnergy.basis === "demand",
       "Steady Use & Smart Energy are demand-based");
-    assert(calc.RATES.meta.version === "1.7.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
+    assert(calc.RATES.meta.version === "1.8.0", `Rate model version bumped (v${calc.RATES.meta.version})`);
     console.log("");
   } catch (e) {
     console.log(`  ✗ Plan inventory tests failed: ${e.message}`);
@@ -541,6 +541,184 @@ async function runFormatTests() {
     console.log("");
   } catch (e) {
     console.log(`  ✗ Rule-mirroring tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 14: bill reconstruction — the engine must reproduce ConEd's real published
+  // bill history (test/fixtures/bill-history-sc1-nyc.json) before any counterfactual
+  // built on it can be trusted (docs/product-strategy.md, "Historical backtest").
+  console.log("Test 14: Bill reconstruction vs published bill history");
+  try {
+    const fx = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/bill-history-sc1-nyc.json"), "utf8"));
+    const nowYear = new Date().getFullYear();
+
+    // Integrity guards on the transcription itself: the fixture is hand-transcribed,
+    // so the suite re-derives its published totals before trusting it as ground truth.
+    const yearKeys = Object.keys(fx.years);
+    const sumC = (o) => Object.keys(o).filter((k) => k !== "total").reduce((s, k) => s + o[k], 0);
+    yearKeys.forEach((y) => {
+      const d = fx.years[y];
+      assertClose(sumC(d.rates), d.ratesTotal, 5e-4, `${y}: rate components sum to the published ¢/kWh total`);
+      Object.keys(d.rates).forEach((c) => {
+        assertClose(d.bill[c], Math.round(fx.sampleKwh * d.rates[c]) / 100, 5e-3,
+          `${y}: published ${c} bill line = ${fx.sampleKwh} kWh × rate`);
+      });
+      assertClose(sumC(d.bill), d.bill.total, 5e-3, `${y}: published bill lines sum to the published total`);
+    });
+    const avg = (f) => yearKeys.reduce((s, y) => s + f(fx.years[y]), 0) / yearKeys.length;
+    assertClose(avg((d) => d.ratesTotal), fx.publishedAverage.ratesTotal, 5e-4,
+      "year columns average to the published 36-month ¢/kWh column");
+    assertClose(avg((d) => d.bill.total), fx.publishedAverage.billTotal, 5e-3,
+      "year columns average to the published 36-month bill column");
+
+    // rates.json must carry the same bill history as the calc.js defaults (Test 13's
+    // mirroring rule, for the new sections), and applyRates() must preserve it.
+    const ratesJson = JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8"));
+    assert(JSON.stringify(ratesJson.bill.periods) === JSON.stringify(calc.RATES.bill.periods),
+      "rates.json bill periods mirror calc.js");
+    assert(JSON.stringify(ratesJson.accuracy) === JSON.stringify(calc.RATES.accuracy),
+      "rates.json accuracy policy mirrors calc.js");
+    assert(ratesJson.bill.source === calc.RATES.bill.source && !!ratesJson.bill.basis,
+      "rates.json carries the bill publication source & basis");
+
+    // Reconstruction: published bills exclude the customer charge, so price them the
+    // same way and require the model to land on the published dollars.
+    const pubFor = (y) => fx.years[String(y)];
+    yearKeys.map(Number).forEach((y) => {
+      const pub = pubFor(y);
+      const rec = calc.reconstructBill({ kwh: fx.sampleKwh, year: y }, { includeCustomerCharge: false });
+      assert(rec.ratePeriod.year === y && rec.projected === false,
+        `${y}: prices at its own published period (not projected)`);
+      ["delivery", "commodity", "mac", "rdm", "surcharges"].forEach((c) => {
+        assertClose(rec.components[c], pub.bill[c], 5e-3, `${y}: reconstructed ${c} matches the published line`);
+      });
+      assertClose(rec.total, pub.bill.total, 5e-3, `${y}: reconstructed bill matches the published $${pub.bill.total.toFixed(2)}`);
+    });
+
+    // 2023's RDM is a credit — the line must price negative and say so.
+    const r2023 = calc.reconstructBill({ kwh: fx.sampleKwh, year: 2023 }, { includeCustomerCharge: false });
+    const rdmLine = r2023.lines.filter((l) => l.component === "rdm")[0];
+    assert(rdmLine.amount < 0 && rdmLine.detail.includes("(credit)"),
+      `2023 RDM prices as a credit ("${rdmLine.detail}")`);
+
+    // Projection rules: an uncovered future year prices at the latest prior period and
+    // is flagged; a year older than the table falls back to the earliest and is flagged.
+    const f2026 = calc.billRatePeriod(2026);
+    assert(f2026.year === 2025 && f2026.projected === true, "2026 prices at the 2025 period, flagged projected");
+    const f2022 = calc.billRatePeriod(2022);
+    assert(f2022.year === 2023 && f2022.projected === true, "2022 falls back to the earliest period, flagged projected");
+    const noYear = calc.billRatePeriod(undefined);
+    assert(noYear.year === 2025 && noYear.projected === (2025 < nowYear),
+      "no year prices at the latest period, projected iff it predates the current year");
+
+    // The default reconstruction (a real customer's bill) adds the customer charge.
+    const noCust2024 = calc.reconstructBill({ kwh: fx.sampleKwh, year: 2024 }, { includeCustomerCharge: false });
+    const withCust = calc.reconstructBill({ kwh: fx.sampleKwh, year: 2024 });
+    assertClose(withCust.components.customerCharge, calc.RATES.standard.customer, 1e-9,
+      "customer charge included by default at the published $/month");
+    assertClose(withCust.total, noCust2024.total + calc.RATES.standard.customer, 1e-9,
+      "default total = published-basis total + customer charge");
+
+    // Partial periods and an actual Market Supply Charge override.
+    const twoMos = calc.reconstructBill({ kwh: fx.sampleKwh, year: 2024, months: 2 });
+    assertClose(twoMos.components.customerCharge, 2 * calc.RATES.standard.customer, 1e-9,
+      "customer charge scales with the period length in months");
+    const ownSupply = calc.reconstructBill({ kwh: fx.sampleKwh, year: 2024, supplyPerKwh: 0.15 },
+      { includeCustomerCharge: false });
+    assertClose(ownSupply.components.commodity, fx.sampleKwh * 0.15, 1e-9,
+      "supplyPerKwh replaces the annual average supply rate (the Market Supply Charge actually billed)");
+    assertClose(ownSupply.total, noCust2024.total - noCust2024.components.commodity + fx.sampleKwh * 0.15, 1e-9,
+      "supplyPerKwh changes only the supply line");
+
+    // Error paths: reconstruction refuses to guess.
+    [() => calc.reconstructBill({}), () => calc.reconstructBill({ kwh: -5 }),
+     () => calc.reconstructBill({ kwh: 300, plan: "tou" })].forEach((f, i) => {
+      try { f(); assert(false, `reconstruction rejects bad input #${i + 1}`); }
+      catch (err) { assert(!!err.message, `reconstruction rejects bad input #${i + 1}: "${err.message.slice(0, 48)}…"`);
+      }
+    });
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Bill reconstruction tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 15: reconciliation & the accuracy gate — modeled vs actual bills, the
+  // pass/warn/fail bands, and the 95%-within-2% gate from docs/product-strategy.md.
+  console.log("Test 15: Reconciliation & accuracy gate");
+  try {
+    const fx = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/bill-history-sc1-nyc.json"), "utf8"));
+    const opts = { includeCustomerCharge: false };
+
+    // A real 3-period account backtest: every published year must reconcile.
+    const backtest = Object.keys(fx.years).map((y) =>
+      calc.reconcileBill({ kwh: fx.sampleKwh, year: +y, total: fx.years[y].bill.total,
+        components: fx.years[y].bill, label: `${y} sample month` }, opts));
+    const realGate = calc.accuracyGate(backtest);
+    assert(realGate.gate === "pass" && realGate.failures.length === 0,
+      `published 3-year backtest passes the gate (${realGate.pctWithin2.toFixed(0)}% within 2%)`);
+    backtest.forEach((r) => {
+      assert(r.band === "pass" && r.withinGate === true, `${r.label}: reconciles (${r.pctError.toFixed(4)}% error)`);
+      assert(Math.abs(r.delta) < 0.005, `${r.label}: delta under half a cent (${r.delta.toFixed(4)} USD)`);
+    });
+
+    // Component-level reconciliation: the driver is the largest absolute delta.
+    const recon = backtest[1]; // 2024
+    assert(!!recon.driver && recon.driver.component === "commodity" || !!recon.driver,
+      `reconciliation names a driver component (${recon.driver ? recon.driver.label : "none"})`);
+    const worst = recon.componentDeltas.reduce((a, b) => (Math.abs(b.delta) > Math.abs(a.delta) ? b : a));
+    assert(recon.driver === worst || Math.abs(recon.driver.delta - worst.delta) < 1e-12,
+      "driver is the component with the largest absolute delta");
+
+    // The bands: ≤2% passes, ≤5% warns, beyond warns fails.
+    const mk = (total, actualExtra, optExtra) => calc.reconcileBill(
+      Object.assign({ kwh: fx.sampleKwh, year: 2024, total }, actualExtra || {}),
+      Object.assign({}, opts, optExtra || {}));
+    assert(mk(fx.years["2024"].bill.total).band === "pass", "an exact bill passes");
+    const warn = mk(97.50);
+    assert(warn.band === "warn" && !warn.withinGate, `+${warn.pctError.toFixed(2)}% lands in the warn band`);
+    const fail = mk(92.00);
+    assert(fail.band === "fail" && !fail.withinGate, `+${fail.pctError.toFixed(2)}% fails outright`);
+    assert(warn.pctError > calc.RATES.accuracy.passPct && warn.pctError <= calc.RATES.accuracy.warnPct,
+      "warn case sits between the configured thresholds");
+
+    // Threshold overrides apply per call (accuracyThresholds plumbing).
+    const strict = mk(fx.years["2024"].bill.total, null, { thresholds: { passPct: 0 } });
+    assert(strict.band === "warn" && strict.withinGate === false,
+      "threshold overrides tighten a call: a 0.0002% miss fails a 0% gate");
+    try { mk(fx.years["2024"].bill.total, null, { thresholds: { passPct: 10 } }); assert(false, "passPct > warnPct override should throw"); }
+    catch (err) { assert(err.message.includes("warnPct"), `incoherent override rejected: "${err.message.slice(0, 52)}…"`);
+    }
+
+    // Errors: reconciliation refuses to guess the actual total; a $0 bill never divides by zero.
+    try { calc.reconcileBill({ kwh: 300, year: 2024 }); assert(false, "should require actual.total"); }
+    catch (err) { assert(err.message.includes("actual bill total"), `missing actual total rejected: "${err.message.slice(0, 48)}…"`);
+    }
+    const zero = mk(0);
+    assert(!isFinite(zero.pctError) && zero.band === "fail",
+      "a $0 actual bill yields ±∞ error and fails (no divide-by-zero)");
+
+    // The gate itself: 95% of periods within 2% passes; one more miss fails; every
+    // miss is listed, never averaged away.
+    const ok = backtest[0];
+    const twenty = Array(19).fill(ok).concat([warn]); // 19/20 within 2% = the gate edge
+    const edgeGate = calc.accuracyGate(twenty);
+    assert(edgeGate.gate === "pass" && edgeGate.within2 === 19 && edgeGate.within5 === 20,
+      `19/20 within 2% passes the 95% gate (${edgeGate.pctWithin2.toFixed(0)}% / ${edgeGate.pctWithin5.toFixed(0)}%)`);
+    const failedGate = calc.accuracyGate(twenty.slice(0, 18).concat([warn, fail]));
+    assert(failedGate.gate === "fail" && failedGate.within2 === 18,
+      "18/20 within 2% fails the gate");
+    assert(failedGate.failures.length === 2 && failedGate.failures.every((f) => f.label && isFinite(f.pctError)),
+      "every miss is listed with its label and error");
+    assertClose(failedGate.maxPctError, fail.pctError, 1e-12, "maxPctError tracks the worst period");
+    assertClose(failedGate.meanPctError, (ok.pctError * 18 + warn.pctError + fail.pctError) / 20, 1e-12,
+      "meanPctError averages all periods");
+    assert(calc.accuracyGate([]).gate === "fail", "no periods = gate fails (refuse by default)");
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Reconciliation/gate tests failed: ${e.message}`);
     testsFailed++;
     console.log("");
   }

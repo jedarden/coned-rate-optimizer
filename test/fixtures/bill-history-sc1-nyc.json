@@ -1,0 +1,35 @@
+{
+  "_comment": "REAL published Con Edison bill history — NYC Residential SC 1 — transcribed for the bill-reconstruction regression tests (test/test.js Tests 14–15). These are ConEd's own published average bills at 300 kWh/month, NOT individual customer bills: they are the ground truth the reconstruction engine must reproduce before any counterfactual can be trusted. Rates are cents per kWh; bill amounts are US$ for the 300 kWh sample month. Integrity checks in the test suite guard the transcription itself (components must sum to published totals; bill amounts must equal sampleKwh × rates; year columns must average to the published 36-month columns).",
+  "publication": "Con Ed Electric Average Bill History — NYC Residential - SC 1 (Average Monthly Electric Bill at 300 kWh)",
+  "source": "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
+  "retrievedFrom": "web.archive.org snapshot 2026-07-03T22:45:29Z of the URL above (coned.com blocks automated fetches)",
+  "transcribed": "2026-09-27",
+  "publicationNotes": [
+    "Bills do not include Customer Charge and BPP",
+    "Bills are grossed up for GRT and sales tax",
+    "Published column totals are computed from unrounded rates, so they differ from the sum of the rounded component rates by ~0.0001 cents/kWh (e.g. 2024 sums to 33.4534 vs the published 33.4533) — the integrity checks in test/test.js allow that tolerance rather than treating it as a transcription error"
+  ],
+  "sampleKwh": 300,
+  "years": {
+    "2023": {
+      "rates": { "delivery": 15.3267, "commodity": 13.2800, "mac": 0.9900, "rdm": -0.6533, "surcharges": 0.5767 },
+      "ratesTotal": 29.5200,
+      "bill": { "delivery": 45.98, "commodity": 39.84, "mac": 2.97, "rdm": -1.96, "surcharges": 1.73, "total": 88.56 }
+    },
+    "2024": {
+      "rates": { "delivery": 17.8967, "commodity": 12.9900, "mac": 0.9300, "rdm": 0.9000, "surcharges": 0.7367 },
+      "ratesTotal": 33.4533,
+      "bill": { "delivery": 53.69, "commodity": 38.97, "mac": 2.79, "rdm": 2.70, "surcharges": 2.21, "total": 100.36 }
+    },
+    "2025": {
+      "rates": { "delivery": 18.3233, "commodity": 13.7533, "mac": 0.8133, "rdm": 0.2867, "surcharges": 0.6500 },
+      "ratesTotal": 33.8267,
+      "bill": { "delivery": 54.97, "commodity": 41.26, "mac": 2.44, "rdm": 0.86, "surcharges": 1.95, "total": 101.48 }
+    }
+  },
+  "publishedAverage": {
+    "label": "2023–2025 Average (published 36-month column)",
+    "ratesTotal": 32.2667,
+    "billTotal": 96.80
+  }
+}

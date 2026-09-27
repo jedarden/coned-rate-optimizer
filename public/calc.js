@@ -6,12 +6,12 @@
 
   var RATES = {
     meta: {
-      version: "1.7.0",
+      version: "1.8.0",
       asOf: "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
       reviewedThrough: "2026-07-01",
       utility: "Con Edison",
       serviceClass: "SC1 (Rate I) — NYC Residential",
-      basis: "Standard/TOU = ConEd 2025 published SC1 NYC average (grossed up for GRT + sales tax). Demand plans use ConEd's published $/kW delivery rates.",
+      basis: "Standard/TOU = ConEd 2025 published SC1 NYC average (grossed up for GRT + sales tax). Demand plans use ConEd's published $/kW delivery rates. Bill reconstruction itemizes ConEd's 3-year published component history (2023–2025) — see RATES.bill.",
       updated: "2026-09",
       peakWindow: "Energy plans: peak 8am–midnight, off-peak midnight–8am. Demand plans (Steady Use / Smart Energy): peak weekdays noon–8pm.",
       switchTiming: "A rate switch takes effect with a future meter read — typically your next bill or the one after (1–2 billing cycles).",
@@ -100,7 +100,28 @@
       solar: "ConEd does not recommend the Smart Energy Plan for solar customers (its billing structure works against net metering) and suggests the Net Metering Plan instead.",
       peakStart: 12, peakEnd: 20, peakWindow: "weekdays noon–8pm",
       demand: { peakSummer: 30.68, peakWinter: 23.60, off: 10.06 }, customer: 16.33
-    }
+    },
+    // Component-level bill history — the same ConEd publication the Standard averages above
+    // come from ("3-Year Historical Average Full Service Electric Rates"), with each year's
+    // components broken out instead of folded into one all-in average. Grossed up for GRT +
+    // sales tax; EXCLUDES the customer charge and BPP, exactly as ConEd publishes them (a
+    // real bill adds the customer charge on top). RDM can be a credit (2023: −0.6533¢/kWh).
+    // A billing year with no period here prices at the latest prior year and reconstructBill
+    // flags it `projected` — 2026 usage is priced at 2025 averages (the first meta caveat).
+    bill: {
+      basis: "ConEd 3-Year Historical Average Full Service Electric Rates — NYC Residential SC 1, grossed up for GRT + sales tax, excluding customer charge & BPP",
+      source: "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
+      periods: [
+        { year: 2023, delivery: 0.153267, commodity: 0.132800, mac: 0.009900, rdm: -0.006533, surcharges: 0.005767 },
+        { year: 2024, delivery: 0.178967, commodity: 0.129900, mac: 0.009300, rdm: 0.009000, surcharges: 0.007367 },
+        { year: 2025, delivery: 0.183233, commodity: 0.137533, mac: 0.008133, rdm: 0.002867, surcharges: 0.006500 }
+      ]
+    },
+    // Accuracy policy (docs/product-strategy.md, "Accuracy gate"): a reconstructed bill that
+    // lands within passPct of the actual bill reconciles; within warnPct matches the ±~5%
+    // caveat the comparison has always carried; an account may only be trusted (never charged)
+    // when at least gateFraction of its supported billing periods reconcile within passPct.
+    accuracy: { passPct: 2, warnPct: 5, gateFraction: 0.95, basis: "docs/product-strategy.md 'Accuracy gate': charge only when ≥95% of complete, supported billing periods reconcile within passPct of the actual bill" }
   };
   RATES._nonDelivery = RATES.standard.allIn - RATES.standard.delivery;
 
@@ -271,6 +292,150 @@
       { label: "Supply + surcharges (flat est.)", detail: fmtKwh(energy) + " × " + cph(RATES._nonDelivery), amount: other },
       { label: "Basic service charge", detail: "$" + plan.customer.toFixed(2) + "/mo", amount: cust }
     ] };
+  }
+
+  // ---- bill reconstruction & accuracy gates ----
+  // The paid product promises historical bill reproduction, so the model has to price a real
+  // billing period component by component (not the all-in averages the plan comparison uses)
+  // and then say how close it came to the bill the customer actually received.
+  var BILL_COMPONENTS = [
+    { key: "customerCharge", label: "Basic service charge", fixed: true },
+    { key: "delivery", label: "Delivery" },
+    { key: "commodity", label: "Supply" },
+    { key: "mac", label: "MAC" },
+    { key: "rdm", label: "RDM" },
+    { key: "surcharges", label: "Surcharges" }
+  ];
+
+  // The component rate set for a billing year: the published period for that year, else the
+  // latest prior year, else the earliest — with `projected` flagging that the year isn't
+  // covered by published data (2026 priced at 2025 averages, or a bill older than 2023).
+  function billRatePeriod(year) {
+    var periods = RATES.bill && RATES.bill.periods;
+    if (!periods || !periods.length) throw new Error("no bill rate periods are configured (RATES.bill.periods is empty) — bill reconstruction needs at least one.");
+    year = +year;
+    if (isNaN(year)) {
+      var latest = periods.reduce(function (a, b) { return b.year > a.year ? b : a; });
+      return { year: latest.year, rates: latest, projected: latest.year < new Date().getFullYear() };
+    }
+    var prior = null, earliest = periods[0];
+    for (var i = 0; i < periods.length; i++) {
+      var p = periods[i];
+      if (p.year === year) return { year: p.year, rates: p, projected: false };
+      if (p.year < year && (!prior || p.year > prior.year)) prior = p;
+      if (p.year < earliest.year) earliest = p;
+    }
+    return prior ? { year: prior.year, rates: prior, projected: true }
+                 : { year: earliest.year, rates: earliest, projected: true };
+  }
+
+  // Price one billing period at component level. period: { kwh, year, months, supplyPerKwh }
+  // — kwh required; months defaults to 1 (fractions model partial periods); supplyPerKwh
+  // replaces the annual average commodity rate with the Market Supply Charge actually billed
+  // that month. options: { customerCharge ($/mo override), includeCustomerCharge (default
+  // true — pass false for ConEd's published bill history, which EXCLUDES it) }.
+  function reconstructBill(period, options) {
+    period = period || {}; options = options || {};
+    var kwh = +period.kwh;
+    if (isNaN(kwh) || kwh < 0) throw new Error("reconstructBill needs the billing period's usage in kWh (period.kwh).");
+    if (period.plan && period.plan !== "standard") throw new Error("bill reconstruction prices the Standard rate (the published bill history's basis) — \"" + period.plan + "\" isn't supported yet.");
+    var months = period.months !== undefined && period.months !== null ? +period.months : 1;
+    if (isNaN(months) || months < 0) months = 1;
+    var sel = billRatePeriod(period.year), r = sel.rates;
+    var commodity = period.supplyPerKwh !== undefined && period.supplyPerKwh !== null ? +period.supplyPerKwh : r.commodity;
+    var custPerMonth = options.customerCharge !== undefined && options.customerCharge !== null ? +options.customerCharge : RATES.standard.customer;
+    var amounts = {
+      customerCharge: options.includeCustomerCharge === false ? 0 : custPerMonth * months,
+      delivery: kwh * r.delivery,
+      commodity: kwh * commodity,
+      mac: kwh * r.mac,
+      rdm: kwh * r.rdm,
+      surcharges: kwh * r.surcharges
+    };
+    var total = 0, lines = [];
+    BILL_COMPONENTS.forEach(function (c) {
+      var amount = amounts[c.key]; total += amount;
+      lines.push({
+        component: c.key, label: c.label, amount: amount,
+        detail: c.fixed
+          ? (options.includeCustomerCharge === false ? "excluded — this bill's basis has no customer charge"
+             : "$" + custPerMonth.toFixed(2) + "/mo × " + months + (months === 1 ? " mo" : " mos"))
+          : fmtKwh(kwh) + " × " + cph(amount / (kwh || 1)) + (amount < 0 ? " (credit)" : "")
+      });
+    });
+    return {
+      plan: "standard", kwh: kwh, months: months, total: total, lines: lines, components: amounts,
+      projected: sel.projected,
+      ratePeriod: { year: sel.year, projected: sel.projected, basis: RATES.bill.basis, source: RATES.bill.source }
+    };
+  }
+
+  // Accuracy policy, with per-call overrides: thresholds({ passPct, warnPct, gateFraction }).
+  function accuracyThresholds(overrides) {
+    var a = RATES.accuracy || {}, t = { passPct: a.passPct, warnPct: a.warnPct, gateFraction: a.gateFraction };
+    if (overrides) Object.keys(t).forEach(function (k) { if (overrides[k] !== undefined) t[k] = overrides[k]; });
+    // Same coherence rule validate-rates.js enforces on rates.json, applied to the
+    // override path: a pass band wider than the warn band makes "warn" meaningless.
+    if (t.passPct > t.warnPct) throw new Error("accuracy thresholds: passPct (" + t.passPct + ") may not exceed warnPct (" + t.warnPct + ") — the pass band would be wider than the warn band.");
+    return t;
+  }
+
+  // Compare a modeled period against the bill the customer actually received.
+  // actual: { kwh, year, months?, total, components? (per-component actuals), supplyPerKwh?,
+  // label? } — options pass through to reconstructBill, plus thresholds.
+  function reconcileBill(actual, options) {
+    actual = actual || {}; options = options || {};
+    var modeled = reconstructBill(actual, options);
+    var actTotal = +actual.total;
+    if (isNaN(actTotal)) throw new Error("reconcileBill needs the actual bill total in dollars (actual.total).");
+    var th = accuracyThresholds(options.thresholds);
+    var delta = modeled.total - actTotal;
+    var pctError = actTotal === 0 ? (Math.abs(delta) < 1e-9 ? 0 : Infinity) : Math.abs(delta) / Math.abs(actTotal) * 100;
+    var componentDeltas = null, driver = null;
+    if (actual.components) {
+      componentDeltas = [];
+      BILL_COMPONENTS.forEach(function (c) {
+        var a = actual.components[c.key];
+        if (a === undefined || a === null) return;
+        var m = modeled.components[c.key], d = m - a;
+        var row = { component: c.key, label: c.label, actual: a, modeled: m, delta: d };
+        componentDeltas.push(row);
+        if (!driver || Math.abs(d) > Math.abs(driver.delta)) driver = row;
+      });
+    }
+    return {
+      label: actual.label || (modeled.kwh + " kWh" + (actual.year !== undefined ? " · " + actual.year : "")),
+      actualTotal: actTotal, modeledTotal: modeled.total, delta: delta, pctError: pctError,
+      band: pctError <= th.passPct ? "pass" : pctError <= th.warnPct ? "warn" : "fail",
+      withinGate: pctError <= th.passPct,
+      componentDeltas: componentDeltas, driver: driver,
+      modeled: modeled, thresholds: th
+    };
+  }
+
+  // The product-strategy accuracy gate over a set of reconciled periods: the model may be
+  // trusted on an account only when at least gateFraction (default 95%) of its supported
+  // billing periods reconcile within passPct (default 2%). Every miss is listed — never
+  // averaged away.
+  function accuracyGate(reconciliations, options) {
+    options = options || {};
+    var th = accuracyThresholds(options.thresholds);
+    var rs = reconciliations || [], n = rs.length;
+    var within2 = 0, within5 = 0, sumPct = 0, maxPct = 0, failures = [];
+    rs.forEach(function (r) {
+      if (r.withinGate) within2++;
+      if (r.pctError <= th.warnPct) within5++;
+      sumPct += r.pctError; if (r.pctError > maxPct) maxPct = r.pctError;
+      if (!r.withinGate) failures.push({ label: r.label, delta: r.delta, pctError: r.pctError, driver: r.driver ? r.driver.label : null });
+    });
+    return {
+      periods: n, within2: within2, within5: within5,
+      pctWithin2: n ? within2 / n * 100 : 0, pctWithin5: n ? within5 / n * 100 : 0,
+      meanPctError: n ? sumPct / n : 0, maxPctError: maxPct,
+      gateFraction: th.gateFraction,
+      gate: n > 0 && within2 / n >= th.gateFraction ? "pass" : "fail",
+      failures: failures
+    };
   }
 
   // RATES key for a plan key ("steady" -> steadyUse, "smart" -> smartEnergy).
@@ -487,7 +652,8 @@
     return Promise.reject(new Error("unsupported compression in the .zip (method " + chosen.method + ")."));
   }
 
-  var api = { RATES: RATES, parse: parse, parseGreenButton: parseGreenButton, parseESPI: parseESPI, costStandard: costStandard, costTOU: costTOU, costDemand: costDemand, analyze: analyze, checkEligibility: checkEligibility, normalizeProfile: normalizeProfile, unzipCsv: unzipCsv, applyRates: applyRates };
+  var api = { RATES: RATES, parse: parse, parseGreenButton: parseGreenButton, parseESPI: parseESPI, costStandard: costStandard, costTOU: costTOU, costDemand: costDemand, analyze: analyze, checkEligibility: checkEligibility, normalizeProfile: normalizeProfile, unzipCsv: unzipCsv, applyRates: applyRates,
+    BILL_COMPONENTS: BILL_COMPONENTS, billRatePeriod: billRatePeriod, reconstructBill: reconstructBill, reconcileBill: reconcileBill, accuracyGate: accuracyGate, accuracyThresholds: accuracyThresholds };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ConedCalc = api;
 })(typeof window !== "undefined" ? window : globalThis);
