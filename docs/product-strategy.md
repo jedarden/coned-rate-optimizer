@@ -258,9 +258,11 @@ supported billing periods. Investigate every miss rather than averaging it away.
 
 ### Phase 1: local upload
 
-Keep the current browser-only Green Button CSV path. It minimizes authorization,
-security, and third-party onboarding work and is sufficient to validate whether
-customers will complete the flow and pay for a correct result.
+Keep the current browser-only Green Button upload path — the raw `.zip` ConEd
+delivers, CSV/TSV, and XML/ESPI are all parsed in-page and never leave the device.
+It minimizes authorization, security, and third-party onboarding work and is
+sufficient to validate whether customers will complete the flow and pay for a
+correct result.
 
 ### Phase 2: Green Button Connect
 

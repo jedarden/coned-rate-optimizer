@@ -3,6 +3,7 @@
    Tests parsing, analysis, and rate calculations */
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
 const calc = require("../public/calc.js");
 
 let testsPassed = 0;
@@ -140,16 +141,219 @@ try {
   console.log("");
 }
 
-// Summary
-console.log("Test Results:");
-console.log(`  Passed: ${testsPassed}`);
-console.log(`  Failed: ${testsFailed}`);
-console.log(`  Total:  ${testsPassed + testsFailed}`);
-console.log("");
+// ---- async tests (XML/ESPI + ZIP paths) run after the sync ones, then summary prints ----
 
-if (testsFailed > 0) {
-  process.exit(1);
-} else {
-  console.log("All tests passed! ✓");
-  process.exit(0);
+// Minimal zip writer: builds in-memory archives so unzipCsv() can be tested without
+// committing binary fixtures. CRC32 included — the archives are well-formed zips.
+let crcTable;
+function crc32(buf) {
+  if (!crcTable) {
+    crcTable = new Int32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c;
+    }
+  }
+  let c = -1;
+  for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
 }
+
+function zipEntryData(name, data, method) {
+  const nameBuf = Buffer.from(name, "utf8");
+  const body = method === 8 ? zlib.deflateRawSync(data) : data;
+  const crc = crc32(data);
+  const local = Buffer.alloc(30 + nameBuf.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);          // version needed
+  local.writeUInt16LE(0, 6);           // flags
+  local.writeUInt16LE(method, 8);
+  local.writeUInt16LE(0, 10);          // mod time
+  local.writeUInt16LE(0, 12);          // mod date
+  local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(body.length, 18); // compressed size
+  local.writeUInt32LE(data.length, 22); // uncompressed size
+  local.writeUInt16LE(nameBuf.length, 26);
+  local.writeUInt16LE(0, 28);          // extra len
+  nameBuf.copy(local, 30);
+  return { local: Buffer.concat([local, body]), nameBuf, method, crc, compSize: body.length, uncompSize: data.length };
+}
+
+function buildZip(entries) {
+  const parts = [], centrals = [];
+  let offset = 0;
+  for (const e of entries) {
+    const d = zipEntryData(e.name, e.data, e.method);
+    parts.push(d.local);
+    const central = Buffer.alloc(46 + d.nameBuf.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);      // version made by
+    central.writeUInt16LE(20, 6);      // version needed
+    central.writeUInt16LE(0, 8);       // flags
+    central.writeUInt16LE(d.method, 10);
+    central.writeUInt16LE(0, 12);      // time
+    central.writeUInt16LE(0, 14);      // date
+    central.writeUInt32LE(d.crc, 16);
+    central.writeUInt32LE(d.compSize, 20);
+    central.writeUInt32LE(d.uncompSize, 24);
+    central.writeUInt16LE(d.nameBuf.length, 28);
+    central.writeUInt16LE(0, 30);      // extra len
+    central.writeUInt16LE(0, 32);      // comment len
+    central.writeUInt16LE(0, 34);      // disk start
+    central.writeUInt16LE(0, 36);      // internal attrs
+    central.writeUInt32LE(0, 38);      // external attrs
+    central.writeUInt32LE(offset, 42); // local header offset
+    d.nameBuf.copy(central, 46);
+    centrals.push(central);
+    offset += d.local.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cd.length, 12);
+  eocd.writeUInt32LE(offset, 16);      // cd offset
+  return Buffer.concat([...parts, cd, eocd]);
+}
+
+async function runFormatTests() {
+  // Test 6: XML/ESPI parsing — cross-format equivalence with the CSV fixture
+  console.log("Test 6: Parse Green Button XML (ESPI)");
+  try {
+    const csvText = fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.csv"), "utf8");
+    const xmlText = fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.xml"), "utf8");
+    const fromCsv = calc.parseGreenButton(csvText);
+    const parsed = calc.parseESPI(xmlText);
+
+    assert(parsed.intervals === 72, `Parsed ${parsed.intervals} interval readings (expected 72)`);
+    assert(parsed.ndays === 3, `Parsed ${parsed.ndays} days (expected 3)`);
+    assert(parsed.months.length === 2, `Generated ${parsed.months.length} month records (expected 2)`);
+    // Same underlying data as the CSV fixture: per-month totals/peak/off must agree
+    parsed.months.forEach((xm, i) => {
+      const cm = fromCsv.months[i];
+      assertClose(xm.total, cm.total, 1e-6, `XML month ${xm.ym} total matches CSV (${xm.ym})`);
+      assertClose(xm.peak, cm.peak, 1e-6, `XML month ${xm.ym} peak kWh matches CSV`);
+      assertClose(xm.off, cm.off, 1e-6, `XML month ${xm.ym} off-peak kWh matches CSV`);
+    });
+
+    // The router should auto-detect XML and produce the same result
+    const routed = calc.parse(xmlText);
+    assertClose(routed.months[0].total, parsed.months[0].total, 1e-9, "parse() routes XML to the ESPI parser");
+
+    // Namespace-prefix tolerance: strip the espi: prefixes and results must be identical
+    const unprefixed = xmlText.replace(/(<\/?)espi:/g, "$1");
+    const alt = calc.parseESPI(unprefixed);
+    assertClose(alt.months[0].total, parsed.months[0].total, 1e-9, "ESPI parser handles unprefixed XML too");
+
+    // Analyze works end-to-end on the XML path
+    const analysis = calc.analyze(parsed);
+    assert(analysis.totalKwh > 0, `XML analysis computes total kWh: ${analysis.totalKwh.toFixed(2)}`);
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ XML/ESPI tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 7: XML graceful errors
+  console.log("Test 7: XML/ESPI error handling");
+  try {
+    try {
+      calc.parseESPI("<?xml version=\"1.0\"?><root><foo>bar</foo></root>");
+      console.log(`  ✗ Should reject XML with no interval readings`);
+      testsFailed++;
+    } catch (e) {
+      assert(e.message.includes("interval readings"), `Non-ESPI XML rejected with guidance: "${e.message.slice(0, 60)}…"`);
+    }
+    try {
+      calc.parseESPI("");
+      console.log(`  ✗ Should reject empty XML`);
+      testsFailed++;
+    } catch (e) {
+      assert(e.message.includes("interval readings"), "Empty XML rejected gracefully");
+    }
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ XML error tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 8: ZIP import (stored + deflate), including XML inside a zip
+  console.log("Test 8: Import raw .zip");
+  try {
+    const csvText = fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.csv"), "utf8");
+    const xmlText = fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.xml"), "utf8");
+
+    const storedZip = buildZip([{ name: "coned-usage.csv", data: Buffer.from(csvText, "utf8"), method: 0 }]);
+    const storedText = await calc.unzipCsv(storedZip.buffer.slice(storedZip.byteOffset, storedZip.byteOffset + storedZip.byteLength));
+    assert(storedText === csvText, "Stored (uncompressed) .zip yields the original CSV text");
+
+    const deflatedZip = buildZip([{ name: "coned-usage.csv", data: Buffer.from(csvText, "utf8"), method: 8 }]);
+    const deflatedText = await calc.unzipCsv(deflatedZip.buffer.slice(deflatedZip.byteOffset, deflatedZip.byteOffset + deflatedZip.byteLength));
+    assert(deflatedText === csvText, "Deflated .zip inflates back to the original CSV text");
+
+    // ConEd-style zip: usage XML + a non-data file alongside it; the .xml must win over the fallback
+    const mixedZip = buildZip([
+      { name: "readme.txt", data: Buffer.from("Your Green Button data is attached."), method: 0 },
+      { name: "usage.xml", data: Buffer.from(xmlText, "utf8"), method: 8 },
+    ]);
+    const mixedText = await calc.unzipCsv(mixedZip.buffer.slice(mixedZip.byteOffset, mixedZip.byteOffset + mixedZip.byteLength));
+    const fromXml = calc.parse(mixedText);
+    assert(fromXml.intervals === 72, "XML inside a .zip parses end-to-end (72 intervals)");
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ ZIP tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
+  // Test 9: ZIP graceful errors
+  console.log("Test 9: ZIP error handling");
+  try {
+    try {
+      await calc.unzipCsv(new TextEncoder().encode("this is definitely not a zip file").buffer);
+      console.log(`  ✗ Should reject a non-zip file`);
+      testsFailed++;
+    } catch (e) {
+      assert(e.message.includes("zip"), `Non-zip input rejected gracefully: "${e.message}"`);
+    }
+    // Truncated central directory
+    const z = buildZip([{ name: "x.csv", data: Buffer.from("a,b\n1,2\n"), method: 0 }]);
+    const truncated = z.slice(0, z.length - 15);
+    try {
+      await calc.unzipCsv(truncated.buffer.slice(truncated.byteOffset, truncated.byteOffset + truncated.byteLength));
+      console.log(`  ✗ Should reject a corrupt zip`);
+      testsFailed++;
+    } catch (e) {
+      assert(e.message.includes("corrupt"), "Corrupt zip rejected gracefully");
+    }
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ ZIP error tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+}
+
+// Summary (printed after the async format tests finish)
+function printSummary() {
+  console.log("Test Results:");
+  console.log(`  Passed: ${testsPassed}`);
+  console.log(`  Failed: ${testsFailed}`);
+  console.log(`  Total:  ${testsPassed + testsFailed}`);
+  console.log("");
+
+  if (testsFailed > 0) {
+    process.exit(1);
+  } else {
+    console.log("All tests passed! ✓");
+    process.exit(0);
+  }
+}
+
+runFormatTests().then(printSummary).catch((e) => {
+  console.log(`  ✗ Async test runner crashed: ${e.message}`);
+  printSummary();
+});

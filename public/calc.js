@@ -140,14 +140,17 @@
     var p = {}; _ET.formatToParts(new Date(epoch * 1000)).forEach(function (x) { p[x.type] = x.value; });
     return { y: +p.year, mo: +p.month, d: +p.day, hour: parseInt(p.hour, 10) % 24, weekday: _WD[p.weekday] };
   }
+  // ESPI feeds may prefix elements with a namespace (e.g. <espi:IntervalReading>) or not — match either.
+  var _P = "(?:[A-Za-z_][\\w.-]*:)?";
   function parseESPI(xml) {
     if (!_ET) throw new Error("this browser can't parse the XML export — please use the CSV format instead.");
-    var mm = /<powerOfTenMultiplier[^>]*>\s*(-?\d+)\s*<\/powerOfTenMultiplier>/.exec(xml);
+    var mm = new RegExp("<" + _P + "powerOfTenMultiplier[^>]*>\\s*(-?\\d+)\\s*<\\/" + _P + "powerOfTenMultiplier>").exec(xml);
     var scale = Math.pow(10, mm ? +mm[1] : 0) / 1000;   // reading value (Wh, scaled) -> kWh
-    var blocks = xml.match(/<IntervalReading[\s\S]*?<\/IntervalReading>/g) || [];
+    var blocks = xml.match(new RegExp("<" + _P + "IntervalReading[\\s\\S]*?<\\/" + _P + "IntervalReading>", "g")) || [];
     var hourMap = {}, days = {}, minD = null, maxD = null, rowN = 0;
     blocks.forEach(function (b) {
-      var s = /<start>\s*(\d+)\s*<\/start>/.exec(b), v = /<value>\s*(-?\d+(?:\.\d+)?)\s*<\/value>/.exec(b);
+      var s = new RegExp("<" + _P + "start>\\s*(\\d+)\\s*<\\/" + _P + "start>").exec(b),
+          v = new RegExp("<" + _P + "value>\\s*(-?\\d+(?:\\.\\d+)?)\\s*<\\/" + _P + "value>").exec(b);
       if (!s || !v) return;
       var e = etParts(+s[1]), kwh = +v[1] * scale;
       if (isNaN(kwh)) return;

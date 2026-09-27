@@ -13,10 +13,33 @@ the month-over-month bill experience, is documented in
 
 ## What it does
 
-- Parses ConEd 15-minute interval Green Button CSV/TSV entirely in-browser.
+- Parses ConEd Green Button interval exports entirely in-browser — **CSV/TSV**, **XML (ESPI)**, or the **raw `.zip`** exactly as ConEd delivers it (see [Import formats](#import-formats--green-button-connect)).
 - Prices your usage under **Standard (SC1)** vs **Residential Time-of-Use**, month by month.
 - Shows the verdict (stay / switch + $), a per-plan table, your peak/off-peak load shape, and a monthly bar chart.
 - Honest by design: for most (peak-heavy) NYC homes it will say **"stay on Standard."**
+
+## Import formats & Green Button Connect
+
+All parsing happens in the browser (`public/calc.js`); files never leave the device.
+
+| Format | How it works |
+|---|---|
+| `.zip` (what ConEd emails you) | Detected by magic bytes and unpacked in-page (`unzipCsv`, using `DecompressionStream`) — no need to unzip first. The first `.csv` or `.xml` inside is used. |
+| `.csv` / `.tsv` | The classic "Download my data" layout (`DATE`, `START TIME`, `USAGE` columns; delimiter auto-detected). |
+| `.xml` (ESPI) | Green Button ESPI Atom feeds, with or without a namespace prefix (`<espi:IntervalReading>` or `<IntervalReading>`); epoch timestamps are converted to America/New_York before pricing. Wh values and `powerOfTenMultiplier` scaling are handled. |
+
+Malformed input fails with a specific, human-readable error (wrong export type, no
+interval data, corrupt/unsupported zip, XML with no readings) — never a raw stack trace.
+
+**Green Button Connect (account authorization) is not available in this tool.**
+Connecting directly to a ConEd account requires ConEd's third-party onboarding and
+data security agreement, an OAuth redirect endpoint, and data storage — all of which
+conflict with this prototype's 100% client-side, nothing-uploaded design. It is
+explicitly scoped as **Phase 2** of the paid product in
+[`docs/product-strategy.md`](docs/product-strategy.md) ("Data architecture"), where
+the consent and scope requirements are documented. This site never asks for your
+Con Edison password and never connects to your account; it only reads a file you
+downloaded yourself.
 
 ## Structure
 
@@ -33,6 +56,7 @@ test/              <- automated test suite and fixtures
   test.js          <- automated tests for calc.js core
   fixtures/
     sample-greenbutton.csv  <- sample data for testing
+    sample-greenbutton.xml  <- same data as ESPI XML (epoch/Wh), for parseESPI tests
 ```
 
 ## Run locally
@@ -56,6 +80,7 @@ node verify.js
 ### Verify with your own data
 ```bash
 node verify.js ~/path/to/your/green-button-export.csv
+# .xml (ESPI) and .zip exports work too — same formats as the browser drop zone
 ```
 
 ## Rate model & caveats
