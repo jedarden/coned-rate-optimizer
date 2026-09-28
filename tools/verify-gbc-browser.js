@@ -15,6 +15,8 @@
      3. interval + billing feeds pulled → verdict rendered ("ConEd account" label),
         the confidence call reflects the imported billing history, and the
         bill-replay section names what couldn't be checked
+     3b. a grant revoked mid-session → Re-pull shows the friendly reconnect
+        guidance (then a restored grant re-pulls the feeds)
      4. a file import after connecting resets the billing history (no stale bills)
      5. Disconnect clears the token and resets the panel
 
@@ -165,6 +167,25 @@ const ok = (cond, msg) => {
     ok(!!conn && conn.accessToken === box.accessToken, "access token lives in this tab's sessionStorage (and nowhere else)");
     ok(pageErrors.length === 0, "no page errors" + (pageErrors.length ? ` — ${pageErrors.join(" | ")}` : ""));
 
+    console.log("\n3b. A grant revoked mid-session: the page's reconnect guidance");
+    box.revokeToken();
+    await page.click("#gbc-refresh");
+    await page.waitForFunction(
+      () => /reconnect your account/.test(document.getElementById("gbc-status").textContent),
+      null, { timeout: 10000 }
+    );
+    ok(true, "re-pull on a revoked grant shows the friendly reconnect guidance, not a raw error");
+    box.restoreToken();
+    await page.click("#gbc-refresh");
+    // The verdict is still on screen from the earlier successful connect (a failed
+    // re-pull doesn't clear the analysis), so body text proves nothing here — the
+    // panel status is the fresh signal: it went Connected → error → Connected.
+    await page.waitForFunction(
+      () => /Connected · subscription/.test(document.getElementById("gbc-status").textContent),
+      null, { timeout: 15000 }
+    );
+    ok(true, "a restored grant re-pulls the feeds through the real page");
+
     console.log("\n4. File import resets the connected billing history");
     await page.setInputFiles("#file", path.join(PUBLIC_DIR, "..", "test", "fixtures", "sample-greenbutton.csv"));
     await page.waitForFunction(() => /no actual bills imported/.test(document.body.textContent));
@@ -177,6 +198,7 @@ const ok = (cond, msg) => {
     ok(true, "disconnect removes the token from sessionStorage");
     await page.waitForSelector("#gbc-connect", { state: "visible" });
     ok(true, "panel resets to the connect state");
+    ok(pageErrors.length === 0, "no page errors across the whole run" + (pageErrors.length ? ` — ${pageErrors.join(" | ")}` : ""));
   } catch (e) {
     ok(false, `E2E crashed: ${e.message.split("\n")[0]}`);
   } finally {

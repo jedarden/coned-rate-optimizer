@@ -22,6 +22,10 @@
    in a request body — interval and billing payloads exist only in the
    responses the Data Custodian sends, never in anything received.
 
+   The Data Custodian's bearer gate has a revocation switch
+   (box.revokeToken()/box.restoreToken()) so the expired/revoked-token paths —
+   ConEd's 401 and the page's reconnect guidance — can be driven live.
+
    Exports startSandbox() for the browser end-to-end (tools/verify-gbc-browser.js). */
 "use strict";
 const http = require("http");
@@ -88,6 +92,9 @@ function startSandbox(options) {
   const clientId = options.clientId || "sandbox-third-party-app";
   const clientSecret = options.clientSecret || crypto.randomBytes(16).toString("hex");
   const accessToken = options.accessToken || "sbx_" + crypto.randomBytes(12).toString("hex");
+  // Revocation switch for the Data Custodian's bearer gate: the expired/
+  // revoked-token cases flip this and watch the live 401 arrive.
+  let tokenRevoked = false;
   const fixtureXml = fs.readFileSync(FIXTURE, "utf8");
   const codes = new Map(); // authorization code → {redirectUri, used}
   // Every request the sandbox receives — method, full URL, and any POST body.
@@ -181,7 +188,7 @@ function startSandbox(options) {
         return res.end();
       }
       const cors = { "access-control-allow-origin": "*" };
-      if (req.headers.authorization !== "Bearer " + accessToken) {
+      if (tokenRevoked || req.headers.authorization !== "Bearer " + accessToken) {
         return send(res, 401, jsonText({ error: "invalid_token" }), "application/json", cors);
       }
       const base = origin + "/espi/1_1/resource";
@@ -222,6 +229,8 @@ function startSandbox(options) {
         accessToken,
         fixtureXml,
         requests,
+        revokeToken: () => { tokenRevoked = true; },
+        restoreToken: () => { tokenRevoked = false; },
         stop: () => new Promise((done) => server.close(done))
       });
     });
@@ -342,6 +351,24 @@ async function run() {
   await gbc.refreshFeeds(cfg, { accessToken: "x", expiresAt: Date.now() - 1 }).then(
     () => ok(false, "stale connection must not fetch"),
     (e) => ok(/reconnect/.test(e.message), "stale connection refused before any request")
+  );
+  box.revokeToken();
+  await gbc.apiGet(conn.accessToken, box.origin + "/espi/1_1/resource/Subscription").then(
+    () => ok(false, "a revoked grant must fail"),
+    (e) => ok(/expired|reconnect/.test(e.message), `revoked grant gets the friendly 401 message ("${e.message.slice(0, 48)}")`)
+  );
+  await gbc.refreshFeeds(cfg, conn).then(
+    () => ok(false, "re-pulling feeds on a revoked grant must fail"),
+    (e) => ok(/reconnect/.test(e.message), `the page's Re-pull path gets the reconnect guidance ("${e.message.slice(0, 48)}")`)
+  );
+  box.restoreToken();
+  await gbc.apiGet(conn.accessToken, box.origin + "/espi/1_1/resource/Subscription").then(
+    (xml) => ok(/<feed/.test(xml), "a restored grant serves feeds again"),
+    (e) => ok(false, `a restored grant must serve feeds again ("${e.message}")`)
+  );
+  await gbc.refreshFeeds(cfg, conn).then(
+    (res) => ok(res.parsed.intervals === 72, "feeds recover once the grant is restored"),
+    (e) => ok(false, `feeds must recover after restore ("${e.message}")`)
   );
 
   console.log("\n8. Pages Function guard rails + token API contract (invoked directly)");
