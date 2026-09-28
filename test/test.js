@@ -1434,9 +1434,10 @@ try {
 // Test 21: persistent monthly monitoring — the retained series (monitor.js):
 // merge/revision/retention, the plan timeline, the stitched per-period dashboard
 // across a plan switch, realized switch savings, and the storage contract
-// (round-trip, corrupt input, deletion). The retention/deletion behavior is the
-// documented contract this test pins: newest 36 months kept, deletion removes
-// everything, unreadable stores start fresh rather than crash.
+// (round-trip, corrupt input, deletion), raw-data privacy, and the no-network
+// localStorage boundary. The retention/deletion behavior is the documented
+// contract this test pins: newest 36 months kept, deletion removes everything,
+// unreadable stores start fresh rather than crash.
 console.log("Test 21: Persistent monthly monitoring");
 try {
   // Self-sufficient rate state (earlier tests mutate RATES).
@@ -1585,6 +1586,68 @@ try {
   let threw = false;
   try { mon.save(s, null); } catch (e) { threw = true; }
   assert(threw, "saving with no storage available throws (the UI surfaces it, data isn't silently dropped)");
+
+  // ---- privacy boundary: only the documented monthly summaries survive ---
+  const secret = "DO_NOT_RETAIN_GREEN_BUTTON_SECRET_7f4d";
+  const sampleMarker = "Sample NYC home · ~10,300 kWh/yr";
+  const rawInterval = { timestamp: "2026-01-15T12:00:00Z", usage: 4.2, marker: secret };
+  const privacySeries = mon.ingest(mon.blank(), {
+    source: "file", plan: "standard", importedAt: 6000,
+    months: [month("2026-01", 300, 200)],
+    // These are deliberately connector-shaped fields. They must be ignored,
+    // not copied into the local monitoring record.
+    hours: [rawInterval], intervals: [rawInterval], rawIntervals: [rawInterval],
+    accountId: secret, usagePointId: secret, accessToken: secret,
+    authorizationCode: secret, sampleData: sampleMarker,
+    profile: {
+      territory: "nyc", currentPlan: "standard", meter: "smart",
+      solar: false, esco: false, heatPump: false,
+      accountId: secret, usagePointId: secret, token: secret,
+      sampleData: sampleMarker
+    }
+  });
+  const privacyJson = JSON.stringify(privacySeries);
+  assert(!privacyJson.includes(secret) && !privacyJson.includes(sampleMarker),
+    "raw intervals, account identifiers, tokens, and demo sample data never enter the retained series");
+  assert(mon.restoreParsed(privacySeries).hours.length === 0,
+    "restoring monitoring data never recreates hourly interval readings");
+  assert(JSON.stringify(Object.keys(privacySeries.profile).sort()) ===
+         '["currentPlan","esco","heatPump","meter","solar","territory"]',
+    "only the six documented eligibility facts are retained in the profile");
+
+  const privacyStore = memStore();
+  mon.save(privacySeries, privacyStore);
+  assert(!privacyStore.getItem(mon.KEY).includes(secret) && !privacyStore.getItem(mon.KEY).includes(sampleMarker),
+    "the serialized localStorage value excludes raw connector and sample payloads");
+  privacyStore.setItem(mon.KEY, JSON.stringify({ schema: mon.SCHEMA, months: privacySeries.months,
+    profile: { territory: "nyc", currentPlan: "standard", meter: "smart", token: secret } }));
+  assert(!JSON.stringify(mon.load(privacyStore)).includes(secret),
+    "loading an older or hand-written record also strips unknown profile fields");
+
+  // The monitor's storage boundary is localStorage only. Guard the common
+  // browser network entry points while exercising the default-store path.
+  const monitorSource = fs.readFileSync(path.join(__dirname, "../public/monitor.js"), "utf8");
+  assert(!/\b(?:fetch|XMLHttpRequest|sendBeacon)\b/.test(monitorSource),
+    "monitor.js contains no network read/write path");
+  const oldFetch = global.fetch;
+  const oldXHR = global.XMLHttpRequest;
+  const hadLocalStorage = Object.prototype.hasOwnProperty.call(global, "localStorage");
+  const oldLocalStorage = global.localStorage;
+  let networkCalls = 0;
+  const browserStore = memStore();
+  global.fetch = () => { networkCalls++; throw new Error("unexpected monitor network call"); };
+  global.XMLHttpRequest = function () { networkCalls++; throw new Error("unexpected monitor network call"); };
+  global.localStorage = browserStore;
+  try {
+    mon.save(privacySeries);
+    mon.load();
+    mon.clear();
+  } finally {
+    if (oldFetch === undefined) delete global.fetch; else global.fetch = oldFetch;
+    if (oldXHR === undefined) delete global.XMLHttpRequest; else global.XMLHttpRequest = oldXHR;
+    if (hadLocalStorage) global.localStorage = oldLocalStorage; else delete global.localStorage;
+  }
+  assert(networkCalls === 0, "localStorage save/load/delete perform no network reads or writes");
 
   console.log("");
 } catch (e) {

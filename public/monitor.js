@@ -24,6 +24,42 @@
   var KEY = "coned-monitor-series-v1";
   var SCHEMA = 1;
   var RETENTION_MONTHS = 36;   // the retention window (docs: "data retention and deletion behavior")
+  var PROFILE_KEYS = ["territory", "currentPlan", "meter", "solar", "esco", "heatPump"];
+  var PROFILE_ENUMS = {
+    territory: ["nyc", "westchester", "outside"],
+    currentPlan: ["standard", "tou", "steady", "smart"],
+    meter: ["smart", "legacy"]
+  };
+  var PLANS = ["standard", "tou", "steady", "smart"];
+  var SOURCES = ["file", "gbc"];
+
+  function oneOf(value, values) { return values.indexOf(value) >= 0 ? value : null; }
+
+  // The profile is eligibility input, not an arbitrary object supplied by a
+  // connector. Keep only the six declared facts and only the values the page
+  // can produce. This makes the storage boundary hold even if a future caller
+  // accidentally passes the OAuth connection or a provider response through.
+  function safeProfile(profile) {
+    if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
+    var out = {};
+    PROFILE_KEYS.forEach(function (key) {
+      if (key === "solar" || key === "esco" || key === "heatPump") {
+        if (typeof profile[key] === "boolean") out[key] = profile[key];
+      } else {
+        var value = oneOf(profile[key], PROFILE_ENUMS[key]);
+        if (value) out[key] = value;
+      }
+    });
+    return Object.keys(out).length ? out : null;
+  }
+
+  function safePlan(value) { return oneOf(value, PLANS); }
+  function safeSource(value) { return oneOf(value, SOURCES); }
+  function safeImportedAt(value, fallback) {
+    if (typeof value === "number" && isFinite(value)) return value;
+    return typeof fallback === "number" && isFinite(fallback) ? fallback : null;
+  }
+  function validYm(value) { return typeof value === "string" && /^(\d{4})-(0[1-9]|1[0-2])$/.test(value); }
 
   // "YYYY-MM" from a month label, a numeric ymd (20250731), or an ISO date string.
   function ymOf(v) {
@@ -210,10 +246,10 @@
       months: (base.months || []).slice(),
       bills: (base.bills || []).slice(),
       imports: (base.imports || 0) + 1,
-      lastImportedAt: rec.importedAt || base.lastImportedAt || null,
+      lastImportedAt: safeImportedAt(rec.importedAt, base.lastImportedAt),
       timeline: (base.timeline || []).slice(),
       trimmed: base.trimmed || 0,
-      profile: rec.profile || base.profile || null,
+      profile: safeProfile(rec.profile) || safeProfile(base.profile),
       recheck: base.recheck || null
     };
 
@@ -221,7 +257,7 @@
     var byYm = {};
     s.months.forEach(function (m) { byYm[m.ym] = m; });
     (rec.months || []).forEach(function (m) {
-      if (!m || !m.ym || typeof m.total !== "number") return;
+      if (!m || !validYm(m.ym) || typeof m.total !== "number") return;
       var fresh = { ym: m.ym, month: monthMo(m), total: m.total, peak: m.peak || 0, off: m.off || 0,
                     summer: m.summer !== undefined && m.summer !== null ? !!m.summer : isSummerMo(monthMo(m)),
                     ndays: m.ndays };
@@ -259,12 +295,13 @@
     // declaring import covered (a pull that carries no usage runs from the
     // import month), and a declaration matching the plan already in effect
     // records nothing.
-    if (rec.plan) {
+    var declaredPlan = safePlan(rec.plan);
+    if (declaredPlan) {
       var from = (rec.months || []).reduce(function (min, m) {
-        return m && m.ym && (!min || m.ym < min) ? m.ym : min;
+        return m && validYm(m.ym) && (!min || m.ym < min) ? m.ym : min;
       }, null) || ymOf(rec.importedAt);
-      if (from && planFor(s, from) !== rec.plan)
-        s.timeline.push({ from: from, plan: rec.plan, source: rec.source || null, at: rec.importedAt || null });
+      if (validYm(from) && planFor(s, from) !== declaredPlan)
+        s.timeline.push({ from: from, plan: declaredPlan, source: safeSource(rec.source), at: safeImportedAt(rec.importedAt, null) });
       s.timeline.sort(function (a, b) { return a.from < b.from ? -1 : a.from > b.from ? 1 : 0; });
     }
 
@@ -446,16 +483,16 @@
       var obj = JSON.parse(raw);
       if (!obj || obj.schema !== SCHEMA || !Array.isArray(obj.months)) return s;
       s.months = obj.months.filter(function (m) {
-        return m && typeof m.ym === "string" && typeof m.total === "number";
+        return m && validYm(m.ym) && typeof m.total === "number";
       });
       if (Array.isArray(obj.bills)) s.bills = obj.bills.filter(function (b) { return !!b; });
       if (typeof obj.imports === "number") s.imports = obj.imports;
-      if (obj.lastImportedAt) s.lastImportedAt = obj.lastImportedAt;
+      s.lastImportedAt = safeImportedAt(obj.lastImportedAt, null);
       if (Array.isArray(obj.timeline)) s.timeline = obj.timeline.filter(function (e) {
-        return e && typeof e.from === "string" && typeof e.plan === "string";
+        return e && validYm(e.from) && !!safePlan(e.plan);
       });
       if (typeof obj.trimmed === "number") s.trimmed = obj.trimmed;
-      if (obj.profile && typeof obj.profile === "object") s.profile = obj.profile;
+      if (obj.profile && typeof obj.profile === "object") s.profile = safeProfile(obj.profile);
       if (obj.recheck && typeof obj.recheck === "object" && obj.recheck.recommendation) s.recheck = obj.recheck;
       return s;
     } catch (e) {
