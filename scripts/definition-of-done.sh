@@ -20,6 +20,7 @@ node scripts/validate-rates.js
 node scripts/check-rate-drift.js
 node test/tariff-refresh.js
 node test/test.js
+node test/checkout.js
 node test/analytics-privacy.js
 node test/gbc-sandbox.js
 bash -n scripts/provision-gbc-bindings.sh

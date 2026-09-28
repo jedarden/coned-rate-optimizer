@@ -142,7 +142,8 @@
       savingsBandPct: 0.05,      // ±5% — the absolute-total caveat (meta.caveats[0])
       demandBandPct: 0.10,       // demand-plan targets: supply held flat, exact rates unpublished → wider
       chargingCertified: false,  // docs/product-strategy.md accuracy gate: ≥20 backtested real accounts
-      provider: null,            // payment-provider handoff — set when charging is armed
+      providerCertified: false,  // independent payment-provider certification gate
+      provider: { id: "stripe-checkout", createEndpoint: "/api/checkout/create", sessionEndpoint: "/api/checkout/session" },
       basis: "docs/product-strategy.md 'Pricing' + 'Accuracy gate': $29 report only when projected first-year savings exceed $150 (measured at the low end of the range); never charged until the 20-account backtest certifies the model and a payment provider is wired"
     }
   };
@@ -712,6 +713,16 @@
 
   function usd0(n) { return (n < 0 ? "−$" : "$") + Math.abs(Math.round(n)).toLocaleString("en-US"); }
 
+  function providerConfigured(P) {
+    var p = P && P.provider;
+    return typeof p === "string" ? !!p : !!(p && typeof p.id === "string" && p.id);
+  }
+
+  function providerCertified(P) {
+    var p = P && P.provider;
+    return !!(P && (P.providerCertified === true || (p && typeof p === "object" && p.certified === true)));
+  }
+
   // The annual-savings RANGE the free verdict shows ("the estimated annual opportunity,
   // as a range"). The comparison's honest uncertainty — ±~5% on absolute totals, wider
   // for a demand-plan target whose supply rates aren't published — is applied
@@ -768,10 +779,12 @@
     if (eligible) {
       if (P.chargingCertified !== true) {
         reasons.push("charging isn't armed in this deployment — the strategy's accuracy gate (≥20 backtested real accounts) isn't certified, so the report can't be sold to anyone yet.");
-      } else if (!P.provider) {
+      } else if (!providerConfigured(P)) {
         reasons.push("no payment provider is wired into this deployment.");
+      } else if (!providerCertified(P)) {
+        reasons.push("the payment provider is not certified for this deployment, so checkout remains closed.");
       }
-      collectible = P.chargingCertified === true && !!P.provider;
+      collectible = P.chargingCertified === true && providerConfigured(P) && providerCertified(P);
     }
 
     var offer = null;
@@ -870,8 +883,11 @@
   // flow: the current flow object (null to start); NEVER mutated — every transition
   // returns a new one, so a re-render can replay safely.
   //   states:  start → offered | not_offered | unavailable → consented → charging
-  //            → paid → refunded;  charging → failed → charging | abandoned
-  //   events:  verdict, consent, charge, charge_failed, charge_succeeded, refund_requested
+  //            → redirecting → paid → refunded; charging → failed | cancelled
+  //            → charging | abandoned
+  //   events:  verdict, consent, charge, redirected, charge_failed,
+  //            charge_cancelled, charge_succeeded, checkout_succeeded,
+  //            checkout_cancelled, refund_requested
   // ctx: { pricing, now } — pricing overrides RATES.pricing (tests, future per-deploy policy).
   function newPaymentFlow() {
     return { state: "start", attempts: 0, consent: null, purchase: null, refund: null, reason: null };
@@ -890,7 +906,9 @@
       f.state = "offered"; return f;
     }
     if (event === "consent") {
-      if (f.state !== "offered") return refuse("no offer is active — consent can't start a charge the verdict never offered");
+      if (["offered", "failed", "cancelled"].indexOf(f.state) === -1) {
+        return refuse("no offer is active — consent can't start a charge the verdict never offered");
+      }
       var v = validateConsent(payload && payload.consent, P);
       if (!v.valid) return refuse(v.reason);
       f.consent = payload.consent; f.state = "consented";
@@ -900,6 +918,11 @@
       if (f.state === "abandoned") return refuse("this offer was withdrawn after " + (P.maxPaymentAttempts || 3) + " failed payment attempts");
       if (f.state !== "consented" && f.state !== "failed") return refuse("no authorized charge is pending");
       f.state = "charging";
+      return f;
+    }
+    if (event === "redirected") {
+      if (f.state !== "charging") return refuse("no charge is being redirected");
+      f.state = "redirecting";
       return f;
     }
     if (event === "charge_failed") {
@@ -920,6 +943,36 @@
       f.attempts += 1;
       f.state = "paid";
       f.purchase = { paidAt: (ctx && ctx.now) || Date.now(), amount: P.report && P.report.price, currency: P.currency || "usd", refunded: false };
+      return f;
+    }
+    if (event === "charge_cancelled") {
+      if (["charging", "redirecting"].indexOf(f.state) === -1) return refuse("no charge in flight");
+      f.state = "cancelled";
+      f.reason = "checkout was cancelled — no charge was made; the free result remains available";
+      return f;
+    }
+    if (event === "checkout_succeeded") {
+      if (["offered", "redirecting", "charging"].indexOf(f.state) === -1) {
+        return refuse("no provider-confirmed checkout is pending");
+      }
+      f.state = "paid";
+      f.purchase = { paidAt: (ctx && ctx.now) || Date.now(), amount: P.report && P.report.price, currency: P.currency || "usd", refunded: false };
+      return f;
+    }
+    if (event === "checkout_cancelled") {
+      if (["offered", "redirecting", "charging"].indexOf(f.state) === -1) {
+        return refuse("no provider checkout is pending");
+      }
+      f.state = "cancelled";
+      f.reason = "checkout was cancelled — no charge was made; the free result remains available";
+      return f;
+    }
+    if (event === "checkout_failed") {
+      if (["offered", "redirecting", "charging"].indexOf(f.state) === -1) {
+        return refuse("no provider checkout is pending");
+      }
+      f.state = "failed";
+      f.reason = "the payment provider could not confirm checkout — no report was unlocked and the free result remains available";
       return f;
     }
     if (event === "refund_requested") {

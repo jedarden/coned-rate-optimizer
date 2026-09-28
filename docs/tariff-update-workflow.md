@@ -177,7 +177,8 @@ of them.
 | `refund` | `{ windowDays }` | The published refund window in days — a consumer term, exact-mirrored like `lockIn`. |
 | `maxPaymentAttempts` | positive integer | Payment retry cap. |
 | `chargingCertified` | boolean | The accuracy-gate certification (≥20 backtested accounts). `false` is a valid, expected shipping state and means nothing may ever charge (test 20 asserts this deployment ships false). Exact-mirrored. |
-| `provider` | string \| `null` | Payment-provider handoff — `null` until charging is armed. |
+| `providerCertified` | boolean | Independent certification that the hosted payment provider is approved for this deployment. Both certification flags must be true before collection. Exact-mirrored. |
+| `provider` | object \| `null` | Payment-provider descriptor (`id`, checkout-create endpoint, and session-verification endpoint). It may be integrated while `providerCertified` remains false. |
 | `basis` | string | Provenance: the doc section these numbers come from and the conditions on charging. Exact-mirrored. |
 
 Nothing here is a ConEd fact — no `source` URL, no §2 cadence. Its authority

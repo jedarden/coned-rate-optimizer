@@ -10,7 +10,7 @@
   var drop = $("drop"), file = $("file"), err = $("error"), results = $("results");
   var evToggle = $("ev-toggle"), lastParsed = null, lastLabel = "", lastBills = [], lastBillingNote = null;
   var series = null, monitorNote = null; // the retained monitoring series; save failures surface once, where the numbers are
-  var paymentFlow = C.newPaymentFlow(), paymentFingerprint = null;
+  var paymentFlow = C.newPaymentFlow(), paymentFingerprint = null, checkoutResumeAttempted = false;
 
   var usd = function (n) { return (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
   var usd2 = function (n) { return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
@@ -28,6 +28,7 @@
   function resetPaymentFlow() {
     paymentFlow = C.newPaymentFlow();
     paymentFingerprint = null;
+    checkoutResumeAttempted = false;
   }
 
   function syncPaymentFlow(paid) {
@@ -401,14 +402,15 @@
     if (state === "unavailable") {
       return '<section id="report-checkout" class="checkout-card" aria-labelledby="checkout-title">' +
         '<div class="eyebrow">Checkout</div><h2 id="checkout-title">' + offer.name + ' · ' + price + '</h2>' +
-        '<p>' + (paid.reasons[paid.reasons.length - 1] || "Checkout is not available yet.") + '</p>' + content +
+        '<p>' + (flow.reason || paid.reasons[paid.reasons.length - 1] || "Checkout is not available yet.") + '</p>' + content +
         '<p class="legend">You will not be charged while the accuracy gate and payment provider are not both active. The free result above remains yours.</p></section>';
     }
     if (state === "abandoned") {
       return '<section id="report-checkout" class="checkout-card checkout-muted" aria-labelledby="checkout-title">' +
         '<h2 id="checkout-title">Checkout closed for this result</h2><p>' + (flow.reason || "Payment attempts were exhausted.") + '</p></section>';
     }
-    var busy = state === "charging";
+    var cancelled = state === "cancelled";
+    var busy = state === "charging" || state === "redirecting";
     var failed = state === "failed";
     return '<section id="report-checkout" class="checkout-card" aria-labelledby="checkout-title">' +
       '<div class="eyebrow">Checkout</div><h2 id="checkout-title">' + offer.name + ' · ' + price + '</h2>' +
@@ -421,9 +423,9 @@
         '<label><input type="checkbox" id="consent-estimate" /> I understand savings are projected, not guaranteed.</label>' +
         '<label><input type="checkbox" id="consent-charge" /> I authorize the ' + price + ' charge.</label>' +
       '</div>' +
-      (failed ? '<p class="checkout-error" role="alert">' + (flow.reason || "Payment failed.") + '</p>' : '') +
+      ((failed || cancelled) ? '<p class="checkout-error" role="alert">' + (flow.reason || (cancelled ? "Checkout was cancelled — no charge was made." : "Payment failed.")) + '</p>' : '') +
       '<button id="report-pay" class="btn" type="button"' + (busy ? ' disabled' : '') + '>' +
-        (busy ? 'Processing payment…' : failed ? 'Retry payment' : 'Pay ' + price + ' and unlock report') + '</button>' +
+        (busy ? 'Processing payment…' : (failed || cancelled) ? 'Try checkout again' : 'Pay ' + price + ' and unlock report') + '</button>' +
       '<p id="checkout-status" class="legend" role="status"></p></section>';
   }
 
@@ -490,16 +492,59 @@
       }
       paymentFlow = C.paymentTransition(paymentFlow, "charge");
       render(a, lastLabel, { noScroll: true });
-      var request = { product: a.paid.offer.product, amount: a.paid.offer.price, currency: a.paid.offer.currency };
+      var request = { product: a.paid.offer.product, amount: a.paid.offer.price, currency: a.paid.offer.currency,
+        policyVersion: a.paid.offer.policyVersion };
       var result;
       try { result = provider.charge(request); } catch (e) { result = Promise.reject(e); }
-      Promise.resolve(result).then(function () {
-        paymentFlow = C.paymentTransition(paymentFlow, "charge_succeeded", {}, { now: Date.now() });
+      Promise.resolve(result).then(function (outcome) {
+        if (outcome && outcome.status === "redirect") {
+          paymentFlow = C.paymentTransition(paymentFlow, "redirected");
+        } else if (outcome && outcome.status === "cancelled") {
+          paymentFlow = C.paymentTransition(paymentFlow, "charge_cancelled");
+        } else if (outcome && outcome.status === "failed") {
+          paymentFlow = C.paymentTransition(paymentFlow, "charge_failed");
+        } else {
+          paymentFlow = C.paymentTransition(paymentFlow, "charge_succeeded", {}, { now: Date.now() });
+        }
         render(a, lastLabel, { noScroll: true });
-      }).catch(function () {
-        paymentFlow = C.paymentTransition(paymentFlow, "charge_failed");
+      }).catch(function (e) {
+        if (e && e.code === "CHECKOUT_UNAVAILABLE") {
+          paymentFlow.state = "unavailable";
+          paymentFlow.reason = "checkout is unavailable right now — no charge was made; the free result remains available.";
+        } else if (e && e.code === "CHECKOUT_CANCELLED") {
+          paymentFlow = C.paymentTransition(paymentFlow, "charge_cancelled");
+        } else {
+          paymentFlow = C.paymentTransition(paymentFlow, "charge_failed");
+        }
         render(a, lastLabel, { noScroll: true });
       });
+    });
+  }
+
+  // A hosted Checkout redirect leaves this page. On return, verify the session
+  // with the provider before unlocking the report; a URL flag alone is never a
+  // successful payment signal.
+  function resumeCheckout(a, paid) {
+    if (checkoutResumeAttempted || !paid || !paid.collectible) return;
+    var provider = checkoutProvider();
+    if (!provider || typeof provider.resume !== "function") return;
+    var pending = provider.resume();
+    if (!pending) return;
+    checkoutResumeAttempted = true;
+    Promise.resolve(pending).then(function (outcome) {
+      if (outcome && outcome.status === "succeeded") {
+        paymentFlow = C.paymentTransition(paymentFlow, "checkout_succeeded", {}, { now: Date.now() });
+      } else if (outcome && outcome.status === "cancelled") {
+        paymentFlow = C.paymentTransition(paymentFlow, "checkout_cancelled");
+      } else {
+        paymentFlow = C.paymentTransition(paymentFlow, "checkout_failed");
+      }
+      if (typeof provider.clearReturn === "function") provider.clearReturn();
+      render(a, lastLabel, { noScroll: true });
+    }).catch(function (e) {
+      paymentFlow.state = "unavailable";
+      paymentFlow.reason = (e && e.message) || "checkout status could not be verified — no charge was made.";
+      render(a, lastLabel, { noScroll: true });
     });
   }
 
@@ -617,6 +662,7 @@
     $("sources").innerHTML = '<strong>Sources:</strong> ' + R.meta.sources.map(function (s) { return '<a href="' + s + '" target="_blank" rel="noopener">' + s.replace(/^https?:\/\//, "").split("/")[0] + "</a>"; }).join(" · ");
     var sb = $("share-btn"); if (sb) sb.addEventListener("click", function () { shareCard(a); });
     bindCheckout(a);
+    resumeCheckout(a, paid);
     var del = $("monitor-delete");
     if (del) del.addEventListener("click", function () {
       if (!confirm("Delete your stored monitoring history? This removes every retained month and bill summary from this browser, permanently.")) return;

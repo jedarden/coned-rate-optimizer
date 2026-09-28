@@ -163,7 +163,12 @@
     "savingsBandPct": 0.05,
     "demandBandPct": 0.1,
     "chargingCertified": false,
-    "provider": null,
+    "providerCertified": false,
+    "provider": {
+      "id": "stripe-checkout",
+      "createEndpoint": "/api/checkout/create",
+      "sessionEndpoint": "/api/checkout/session"
+    },
     "basis": "docs/product-strategy.md 'Pricing' + 'Accuracy gate': $29 report only when projected first-year savings exceed $150 (measured at the low end of the range); never charged until the 20-account backtest certifies the model and a payment provider is wired"
   }
 }

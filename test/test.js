@@ -1354,8 +1354,8 @@ console.log("Test 20: Paid conversion (offer gate, consent, payment flow, refund
 try {
   calc.applyRates(JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8")));
   const P = calc.RATES.pricing;
-  assert(P.chargingCertified === false && P.provider === null,
-    "this deployment ships uncertified and provider-less: nothing can ever be charged");
+  assert(P.chargingCertified === false && P.providerCertified === false && P.provider && P.provider.id === "stripe-checkout",
+    "this deployment ships with Stripe integrated but both charging certifications disabled: nothing can ever be charged");
 
   // -- savingsRange: the comparison's uncertainty is applied adversarially to both sides --
   const sr = calc.savingsRange(2000, 1800, 0.05);
@@ -1421,16 +1421,22 @@ try {
 
   try {
     P.chargingCertified = true;
+    P.provider = null;
     const noProvider = calc.paidConversion(clear);
     assert(noProvider.collectible === false && noProvider.reasons[0].includes("no payment provider"),
       "certified but provider-less still cannot collect");
     P.provider = { id: "test-provider" };
+    const uncertified = calc.paidConversion(clear);
+    assert(uncertified.collectible === false && uncertified.reasons[0].includes("not certified"),
+      "a wired but uncertified provider still cannot collect");
+    P.providerCertified = true;
     const armed = calc.paidConversion(clear);
     assert(armed.collectible === true && armed.reasons.length === 0,
       "certified and wired → collectible, with no reasons left standing");
   } finally {
     P.chargingCertified = false;
-    P.provider = null;
+    P.providerCertified = false;
+    P.provider = { id: "stripe-checkout", createEndpoint: "/api/checkout/create", sessionEndpoint: "/api/checkout/session" };
   }
 
   // -- validateConsent: explicit, version-bound, every acknowledgment named --
@@ -1497,6 +1503,16 @@ try {
   assert(f.state === "abandoned" && f.attempts === 3, "the third failure withdraws the offer for the session");
   assert(calc.paymentTransition(f, "charge").state === "abandoned",
     "an abandoned flow refuses further charges");
+
+  let cancelled = calc.paymentTransition(calc.paymentTransition(consented, "charge"), "charge_cancelled");
+  assert(cancelled.state === "cancelled" && cancelled.reason.includes("no charge was made"),
+    "a cancelled checkout records no charge and preserves the free result");
+  const cancelledRetry = calc.paymentTransition(cancelled, "consent", { consent: consent });
+  assert(cancelledRetry.state === "consented", "a customer may retry after cancelling hosted checkout");
+
+  const ineligibleCheckout = calc.paymentTransition(calc.newPaymentFlow(), "checkout_succeeded", {}, { now: 1700000000000 });
+  assert(ineligibleCheckout.state === "start" && ineligibleCheckout.reason.includes("no provider-confirmed"),
+    "a provider success cannot unlock a flow with no active offer");
 
   const t0 = 1700000000000;
   const paidF = calc.paymentTransition(calc.paymentTransition(consented, "charge"), "charge_succeeded", {}, { now: t0 });

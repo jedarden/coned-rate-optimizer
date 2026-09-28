@@ -484,6 +484,13 @@ function validate(rates, calcRates, opts) {
       err("pricing.chargingCertified: required boolean (the ≥20-backtested-accounts certification flag — " +
           "false is a valid, expected shipping state and means nothing may charge)");
     }
+    if (typeof pricing.providerCertified !== "boolean") {
+      err("pricing.providerCertified: required boolean (the payment provider's independent certification flag)");
+    }
+    if (pricing.provider !== null &&
+        (!isPlainObject(pricing.provider) || typeof pricing.provider.id !== "string" || !pricing.provider.id)) {
+      err("pricing.provider: null or an object with a provider id is required");
+    }
     if (typeof pricing.basis !== "string" || !pricing.basis) {
       err("pricing.basis: required provenance string (which doc section these prices/thresholds come from)");
     }
@@ -502,7 +509,7 @@ function validate(rates, calcRates, opts) {
   // fields exact (consent records are keyed to the policy version, and the
   // refund window is a published consumer term — the lockIn analog), numeric
   // terms flagged on divergence.
-  const PRICING_EXACT = ["policyVersion", "basis", "chargingCertified", "refund"];
+  const PRICING_EXACT = ["policyVersion", "basis", "chargingCertified", "providerCertified", "provider", "refund"];
   const PRICING_NUMERIC = ["threshold", "savingsBandPct", "demandBandPct", "maxPaymentAttempts"];
   ALL_PLAN_KEYS.forEach((key) => {
     const r = rates[key];
