@@ -42,12 +42,23 @@ no copy anywhere else to delete.
 | Bill summaries | `{ ymdStart, ymdEnd, days, cost, currency, label, revisions }` | The accuracy gate's actual-bill evidence; a re-pulled summary replaces its earlier self and counts the revision |
 | Plan timeline | `{ from, plan, source, at }` per declared switch | Lets a recorded plan switch reprice each month's actual on the plan that was in effect, and price what the switch has saved so far |
 | Declared profile | territory, current plan, meter, solar, ESCO, heat pump | What a revisit re-declares so the eligibility verdict runs without re-answering |
+| Recheck baseline | last recommendation plus rate, usage, and profile fingerprints | Detects a decision-changing tariff refresh or import locally; contains no raw readings |
 | Bookkeeping | `imports`, `lastImportedAt`, `trimmed`, `schema` | What the Monitoring status line reports; `schema` gates forward compatibility |
 
 **Never retained:** hourly interval data (demand-plan counterfactuals over past
 months are reported *unpriced* with the months named — never approximated from
 monthly buckets), account/usage-point identifiers, the access token, the
 authorization code, anything from the demo sample (analyzed, never stored).
+
+The series also keeps a small **recheck baseline**: the last recommendation,
+the published-rate fingerprint/version, and fingerprints of the retained usage
+and declared profile. It contains no additional raw usage. On a later visit,
+after a tariff refresh, or after a new import, the browser compares the new
+analysis with that baseline. An alert is rendered only when the decision
+changes; it names the old and new recommendation and says whether the trigger
+was updated rates, new/revised usage, or changed eligibility facts. An import or
+rate refresh that leaves the recommendation unchanged updates the local
+baseline silently.
 
 ## Retention window
 
@@ -66,7 +77,9 @@ authorization code, anything from the demo sample (analyzed, never stored).
 Loading the page restores the series and re-runs the whole analysis over it at
 the **current published rates** (strategy: *rerun the recommendation after rate
 or load changes*) and re-checks the retained bill evidence through the accuracy
-gate. A revisit is the landing view — it renders without scrolling the page.
+gate. If that recheck changes the decision, the Monitoring section explains
+what moved and why. A revisit is the landing view — it renders without
+scrolling the page.
 
 ## Deletion
 
@@ -97,3 +110,6 @@ gate. A revisit is the landing view — it renders without scrolling the page.
 - The no-network claim is structural: `monitor.js` performs no I/O beyond the
   `localStorage` calls its store parameter receives — the same store can be, and
   in the tests is, an in-memory `Map`.
+- `test/test.js` Test 22 proves the recheck workflow: the first calculation
+  establishes a baseline, unchanged recommendations stay quiet, and changed
+  recommendations caused by new usage or changed rates alert with the cause.

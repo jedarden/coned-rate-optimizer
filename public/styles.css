@@ -112,6 +112,11 @@ tr.na td { color: var(--muted); }
 .pnotes li { margin: 3px 0; }
 .credit td { color: var(--good); }
 .opp { font-size: .9rem; background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
+.recheck-alert { font-size: .9rem; background: var(--good-bg); border: 1px solid color-mix(in srgb, var(--good) 40%, var(--line)); border-radius: 10px; padding: 12px 14px; margin: 12px 0; color: var(--ink); }
+.recheck-alert strong { color: var(--good); }
+.recheck-alert p { margin: 6px 0; }
+.recheck-alert ul { margin: 6px 0 0; padding-left: 20px; color: var(--muted); }
+.recheck-alert li { margin: 3px 0; }
 /* load shape */
 .shape { display: flex; height: 30px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); margin: 6px 0; }
 .shape .peak { background: var(--warn); } .shape .off { background: var(--good); }

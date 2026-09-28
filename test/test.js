@@ -1594,6 +1594,73 @@ try {
   console.log("");
 }
 
+// Test 22: recommendation rechecks — local baselines detect only decisions
+// changed by new usage or changed tariffs, and explain the input that moved it.
+console.log("Test 22: Recommendation rechecks");
+try {
+  calc.applyRates(JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8")));
+  const mon = require("../public/monitor.js");
+  const bucket = (total, peak) => ({ ym: "2025-07", month: 7, total, peak, off: total - peak,
+    summer: true, ndays: 31 });
+  const analyzeSeries = (s) => calc.analyze(mon.restoreParsed(s), { profile: { currentPlan: "standard" } });
+
+  // First calculation establishes a local baseline and is never presented as an alert.
+  let steady = mon.ingest(mon.blank(), { source: "file", importedAt: 1,
+    months: [bucket(400, 300)], profile: { currentPlan: "standard" } });
+  const first = analyzeSeries(steady);
+  const initialized = mon.recheck(steady, first, { trigger: "usage", now: 10 });
+  steady.recheck = initialized.state;
+  assert(initialized.changed === false && initialized.initialized === true,
+    "the first local analysis establishes a baseline without alerting");
+
+  // A changed import that leaves the verdict alone is recorded but stays quiet.
+  steady = mon.ingest(steady, { source: "file", importedAt: 2,
+    months: [bucket(450, 340)], profile: { currentPlan: "standard" } });
+  const stillStay = mon.recheck(steady, analyzeSeries(steady), { trigger: "usage", now: 20 });
+  assert(stillStay.changed === false && stillStay.usageChanged === true && stillStay.alert === null,
+    "new usage that does not change the recommendation produces no alert");
+  steady.recheck = stillStay.state;
+
+  // A newly imported off-peak load shape crosses from stay to switch and names usage.
+  steady = mon.ingest(steady, { source: "file", importedAt: 3,
+    months: [bucket(400, 10)], profile: { currentPlan: "standard" } });
+  const usageChanged = mon.recheck(steady, analyzeSeries(steady), { trigger: "usage", now: 30 });
+  assert(usageChanged.changed === true && usageChanged.usageChanged === true &&
+         usageChanged.current.targetPlan === "tou" && usageChanged.alert.reasonCodes.includes("usage"),
+    "new usage that changes the verdict alerts and identifies the load-profile change");
+  assert(usageChanged.alert.message.includes("Stay on Standard") &&
+         usageChanged.alert.message.includes("Switch to Time-of-Use") &&
+         usageChanged.alert.reasons.some((r) => r.includes("usage")),
+    "the changed-usage alert says what changed and why");
+  steady.recheck = usageChanged.state;
+
+  // Persisting the baseline is still local monitoring state, not a server record.
+  const store = new Map();
+  const localStore = { setItem: (k, v) => store.set(k, String(v)), getItem: (k) => store.get(k) || null,
+    removeItem: (k) => store.delete(k) };
+  mon.save(steady, localStore);
+  assert(mon.load(localStore).recheck.recommendation.decision === usageChanged.current.decision,
+    "the latest recommendation baseline round-trips through local storage");
+
+  // A tariff mutation flips the same usage back to Standard and is attributed to rates.
+  const originalOffPeak = calc.RATES.tou.offPeak;
+  calc.RATES.tou.offPeak = 0.50;
+  const rateChanged = mon.recheck(steady, analyzeSeries(steady), { trigger: "rates", now: 40 });
+  assert(rateChanged.changed === true && rateChanged.rateChanged === true &&
+         rateChanged.current.outcome === "stay" && rateChanged.alert.reasonCodes.includes("rates"),
+    "a rate update that changes the verdict alerts and identifies the tariff change");
+  assert(rateChanged.alert.reasons.some((r) => r.includes("Published rate data changed")),
+    "the changed-rate alert names the published rate update");
+  calc.RATES.tou.offPeak = originalOffPeak;
+  calc.applyRates(JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8")));
+  console.log("");
+} catch (e) {
+  console.log(`  ✗ Recommendation-recheck tests failed: ${e.message}`);
+  console.log(e.stack);
+  testsFailed++;
+  console.log("");
+}
+
 // Summary (printed after the async format tests finish)
 function printSummary() {
   console.log("Test Results:");

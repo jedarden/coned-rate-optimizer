@@ -21,6 +21,9 @@
   var money = function (n) {
     return (n < 0 ? "−$" : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
+  var html = function (s) { return String(s == null ? "" : s).replace(/[&<>\"']/g, function (c) {
+    return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+  }); };
 
   function resetPaymentFlow() {
     paymentFlow = C.newPaymentFlow();
@@ -240,7 +243,7 @@
   // actual-vs-best totals with their verification status, what a plan switch
   // has actually saved since it happened, the current recommendation, and the
   // retention/deletion contract the store runs by.
-  function monitorSection(a, st) {
+  function monitorSection(a, st, recheck) {
     if (!M || !series || !series.months.length) return "";
     var d = st.dashboard;
     if (!d || !d.rows || !d.rows.length) return "";
@@ -253,6 +256,14 @@
       series.imports + " import" + (series.imports === 1 ? "" : "s") +
       (revised ? " · " + revised + " period" + (revised === 1 ? "" : "s") + " revised by a later import" : "") +
       (series.trimmed ? " · " + series.trimmed + " older months aged out of the " + M.RETENTION_MONTHS + "-month window" : "") + ".</p>");
+
+    if (recheck && recheck.changed && recheck.alert) {
+      parts.push('<aside class="recheck-alert" id="monitor-recheck-alert" role="status" aria-live="polite">' +
+        '<strong>' + html(recheck.alert.title) + '</strong>' +
+        '<p>' + html(recheck.alert.message) + '</p>' +
+        '<ul>' + recheck.alert.reasons.map(function (reason) { return '<li>' + html(reason) + '</li>'; }).join("") + '</ul>' +
+        '</aside>');
+    }
 
     // The cumulative answer, with its evidence class stated — "verified" is a
     // gate result (accuracy gate), never a decoration.
@@ -591,7 +602,7 @@
         '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
       '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months, a.smartChargeNY.enabled) +
-      periodSection(st.dashboard) + billsSection(a) + monitorSection(a, st) + paidReportSection(a, st);
+      periodSection(st.dashboard) + billsSection(a) + monitorSection(a, st, opts.recheck) + paidReportSection(a, st);
 
     // footer assumptions/sources
     $("assumptions").innerHTML = '<strong>Assumptions:</strong> ' + R.meta.basis + ' ' + R.meta.peakWindow + ' ' + R.meta.caveats.join(" ");
@@ -607,6 +618,18 @@
     });
     results.hidden = false;
     if (!opts.noScroll) results.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Recheck state is derived after each real calculation and persisted with the
+  // local series. The calculation remains useful if storage is unavailable; the
+  // warning only says that this result cannot become the next visit's baseline.
+  function recordRecheck(a, trigger) {
+    if (!M || !series) return null;
+    var result = M.recheck(series, a, { trigger: trigger });
+    series.recheck = result.state;
+    try { M.save(series); }
+    catch (e) { monitorNote = "couldn't save the recommendation recheck locally (" + e.message + ") — this alert covers this session only."; }
+    return result;
   }
 
   // Every real import (file or Share My Data) merges into the retained series
@@ -643,7 +666,9 @@
       lastParsed = parsed; lastBills = bills || []; lastBillingNote = billingNote || null;
     }
     lastLabel = label;
-    render(C.analyze(lastParsed, calcOptions()), label);
+    var analysis = C.analyze(lastParsed, calcOptions());
+    var recheck = recordRecheck(analysis, "usage");
+    render(analysis, label, { recheck: recheck });
   }
 
   function handleText(text, label) {
@@ -689,7 +714,10 @@
   });
   if (evToggle) evToggle.addEventListener("change", function () {
     resetPaymentFlow();
-    if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
+    if (lastParsed) {
+      var analysis = C.analyze(lastParsed, calcOptions());
+      render(analysis, lastLabel, { recheck: recordRecheck(analysis, "settings") });
+    }
   });
   // Declared eligibility facts (territory, current plan, meter, solar, ESCO, heat pump) —
   // any change re-runs the rules engine, re-renders, and updates the retained series'
@@ -702,14 +730,20 @@
     var el = $(id); if (el) el.addEventListener("change", function () {
       resetPaymentFlow();
       persistProfile();
-      if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
+      if (lastParsed) {
+        var analysis = C.analyze(lastParsed, calcOptions());
+        render(analysis, lastLabel, { recheck: recordRecheck(analysis, "profile") });
+      }
     });
   });
   ["pf-solar", "pf-esco", "pf-heatpump"].forEach(function (id) {
     var el = $(id); if (el) el.addEventListener("change", function () {
       resetPaymentFlow();
       persistProfile();
-      if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
+      if (lastParsed) {
+        var analysis = C.analyze(lastParsed, calcOptions());
+        render(analysis, lastLabel, { recheck: recordRecheck(analysis, "profile") });
+      }
     });
   });
 
@@ -758,7 +792,9 @@
       lastBillingNote = null;
       lastLabel = "your retained monitoring history — " + storedSeries.months.length + " months, " +
         (storedSeries.lastImportedAt ? "last updated " + new Date(storedSeries.lastImportedAt).toLocaleDateString() : "imports merged locally");
-      render(C.analyze(lastParsed, calcOptions()), lastLabel, { noScroll: true });
+      var restoredAnalysis = C.analyze(lastParsed, calcOptions());
+      render(restoredAnalysis, lastLabel, { noScroll: true,
+        recheck: M.recheck(series, restoredAnalysis, { trigger: "revisit" }) });
     }
   }
 
@@ -766,7 +802,14 @@
   if (typeof fetch === "function") {
     fetch("rates.json", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { if (j) { C.applyRates(j); showVer(); stalenessWarning = checkStaleness(); if (lastParsed) { resetPaymentFlow(); render(C.analyze(lastParsed, calcOptions()), lastLabel, { noScroll: true }); } } })
+      .then(function (j) { if (j) {
+        C.applyRates(j); showVer(); stalenessWarning = checkStaleness();
+        if (lastParsed) {
+          resetPaymentFlow();
+          var analysis = C.analyze(lastParsed, calcOptions());
+          render(analysis, lastLabel, { noScroll: true, recheck: recordRecheck(analysis, "rates") });
+        }
+      } })
       .catch(function () {});
   }
 

@@ -7,7 +7,8 @@
    goes nowhere. Retention keeps monthly buckets and bill summaries only — raw
    hourly data, account identifiers, and credentials are never retained, which
    is why a demand-plan counterfactual over past months is reported unpriced
-   rather than approximated. Pricing itself stays in calc.js. */
+   rather than approximated. Pricing itself stays in calc.js. A derived recheck
+   baseline detects decision-changing rates or imports without retaining raw data. */
 (function (root) {
   "use strict";
 
@@ -48,7 +49,151 @@
 
   function blank() {
     return { schema: SCHEMA, months: [], bills: [], imports: 0, lastImportedAt: null,
-             timeline: [], trimmed: 0, profile: null };
+             timeline: [], trimmed: 0, profile: null, recheck: null };
+  }
+
+  // Recheck state deliberately contains only derived recommendation metadata and
+  // fingerprints. It never stores interval readings, identifiers, or credentials.
+  // Keeping this state beside the retained series lets a later visit distinguish a
+  // new tariff from a new usage import without any server-side account.
+  function stable(value) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return "[" + value.map(stable).join(",") + "]";
+    return "{" + Object.keys(value).sort().map(function (key) {
+      return JSON.stringify(key) + ":" + stable(value[key]);
+    }).join(",") + "}";
+  }
+
+  function rateFingerprint(rates) {
+    var C = calc();
+    return stable(rates || C.RATES);
+  }
+
+  function usageFingerprint(series) {
+    var months = ((series && series.months) || []).map(function (m) {
+      return { ym: m.ym, total: m.total, peak: m.peak, off: m.off,
+        summer: m.summer, ndays: m.ndays };
+    });
+    return stable(months);
+  }
+
+  function profileFingerprint(profile) {
+    return stable(profile || null);
+  }
+
+  function currentPlanKey(analysis) {
+    if (analysis && analysis.profile && analysis.profile.currentPlan) return analysis.profile.currentPlan;
+    var current = (analysis && analysis.plans || []).filter(function (p) { return p.current; })[0];
+    return current ? current.key : "standard";
+  }
+
+  function planName(analysis, key) {
+    if (!key) return null;
+    var p = (analysis && analysis.plans || []).filter(function (item) { return item.key === key; })[0];
+    return p ? (p.short || p.name) : key;
+  }
+
+  function recommendationSnapshot(analysis) {
+    analysis = analysis || {};
+    var blockers = analysis.eligibility && analysis.eligibility.blockers || [];
+    var currentKey = currentPlanKey(analysis);
+    var current = (analysis.plans || []).filter(function (p) { return p.key === currentKey; })[0];
+    var target = analysis.switchTarget || null;
+    var saves = !!target && current && target.cost < current.cost - 0.005;
+    var outcome = blockers.length ? "blocked" : saves ? "switch" : target ? "stay" : "no-alternative";
+    var targetKey = outcome === "switch" ? target.key : null;
+    return {
+      outcome: outcome,
+      decision: outcome + ":" + (targetKey || currentKey),
+      currentPlan: currentKey,
+      currentPlanName: planName(analysis, currentKey),
+      targetPlan: targetKey,
+      targetPlanName: planName(analysis, targetKey),
+      annualSavings: outcome === "switch" && isFinite(analysis.savingsIfSwitch)
+        ? Math.max(0, analysis.savingsIfSwitch * (analysis.annualFactor || 1)) : 0,
+      recommendation: analysis.recommendation || "No recommendation available.",
+      blockers: blockers.slice()
+    };
+  }
+
+  function money(value) {
+    return "$" + Math.round(Math.abs(value || 0)).toLocaleString("en-US") + "/year";
+  }
+
+  function decisionExplanation(previous, current) {
+    if (current.outcome === "switch") {
+      if (previous.outcome === "switch" && previous.targetPlan !== current.targetPlan)
+        return "The best eligible switch is now " + current.targetPlanName + " instead of " + previous.targetPlanName + ".";
+      return current.targetPlanName + " now beats your current " + current.currentPlanName + " plan by about " + money(current.annualSavings) + ".";
+    }
+    if (previous.outcome === "switch")
+      return "No eligible alternative now lowers your bill, so staying on " + current.currentPlanName + " is the better recommendation.";
+    if (previous.outcome === "blocked" && current.outcome !== "blocked")
+      return "Your account is now eligible for a normal plan comparison.";
+    if (current.outcome === "blocked")
+      return "The account details now block an actionable recommendation; the comparison is reference-only.";
+    if (previous.outcome === "no-alternative" || current.outcome === "no-alternative")
+      return "There is no eligible alternative plan to compare with your current plan.";
+    return "The recommendation remains a stay decision, but its inputs were rechecked.";
+  }
+
+  // Compare a newly analyzed result with the last locally recorded result. The
+  // returned state is immutable; callers save it only after the calculation and
+  // may display alert when changed is true. A changed recommendation is the only
+  // condition that produces an alert — ordinary tariff revisions or imports that
+  // leave the decision intact stay quiet.
+  function recheck(series, analysis, options) {
+    options = options || {};
+    var C = calc();
+    var previousState = series && series.recheck;
+    var previous = previousState && previousState.recommendation;
+    var current = recommendationSnapshot(analysis);
+    var rates = C.RATES || {};
+    var state = {
+      version: 1,
+      recommendation: current,
+      usageFingerprint: usageFingerprint(series),
+      profileFingerprint: profileFingerprint(analysis && analysis.profile),
+      rateFingerprint: rateFingerprint(rates),
+      rateVersion: rates.meta && rates.meta.version || null,
+      ratesAsOf: rates.meta && rates.meta.asOf || null,
+      checkedAt: options.now || Date.now(),
+      trigger: options.trigger || "recheck"
+    };
+    if (!previous) {
+      return { changed: false, initialized: true, alert: null, previous: null,
+        current: current, state: state, rateChanged: false, usageChanged: false, profileChanged: false };
+    }
+
+    var rateChanged = previousState.rateFingerprint !== state.rateFingerprint;
+    var usageChanged = previousState.usageFingerprint !== state.usageFingerprint;
+    var profileChanged = previousState.profileFingerprint !== state.profileFingerprint;
+    var recommendationChanged = previous.decision !== current.decision;
+    var reasons = [];
+    if (rateChanged) {
+      var oldVersion = previousState.rateVersion || "the previous version";
+      var newVersion = state.rateVersion || "the current version";
+      reasons.push({ code: "rates", text: "Published rate data changed (" + oldVersion + " → " + newVersion + ")." });
+    }
+    if (usageChanged) reasons.push({ code: "usage", text: "New or revised usage data changed the load profile." });
+    if (profileChanged) reasons.push({ code: "profile", text: "Your declared account or eligibility details changed." });
+    if (recommendationChanged && !reasons.length) {
+      reasons.push({ code: "inputs", text: "The inputs used for the recommendation changed." });
+    }
+    var changed = recommendationChanged;
+    var alert = null;
+    if (changed) {
+      alert = {
+        title: "Your rate recommendation changed",
+        message: "It changed from “" + previous.recommendation + "” to “" + current.recommendation + "”. " +
+          decisionExplanation(previous, current),
+        reasons: reasons.map(function (r) { return r.text; }),
+        reasonCodes: reasons.map(function (r) { return r.code; })
+      };
+    }
+    return { changed: changed, initialized: false, alert: alert, previous: previous,
+      current: current, state: state, reasons: reasons, rateChanged: rateChanged,
+      usageChanged: usageChanged, profileChanged: profileChanged };
   }
 
   // One import (a file the user dropped or a Share My Data pull) merged into the
@@ -68,7 +213,8 @@
       lastImportedAt: rec.importedAt || base.lastImportedAt || null,
       timeline: (base.timeline || []).slice(),
       trimmed: base.trimmed || 0,
-      profile: rec.profile || base.profile || null
+      profile: rec.profile || base.profile || null,
+      recheck: base.recheck || null
     };
 
     // Months: newest-wins merge on the "YYYY-MM" bucket, revisions counted.
@@ -310,6 +456,7 @@
       });
       if (typeof obj.trimmed === "number") s.trimmed = obj.trimmed;
       if (obj.profile && typeof obj.profile === "object") s.profile = obj.profile;
+      if (obj.recheck && typeof obj.recheck === "object" && obj.recheck.recommendation) s.recheck = obj.recheck;
       return s;
     } catch (e) {
       return s;   // corrupt stored JSON starts fresh
@@ -323,6 +470,8 @@
   var api = { KEY: KEY, SCHEMA: SCHEMA, RETENTION_MONTHS: RETENTION_MONTHS,
               blank: blank, ingest: ingest, planFor: planFor, segments: segments,
               restoreParsed: restoreParsed, stitch: stitch, realized: realized,
+              rateFingerprint: rateFingerprint, recommendationSnapshot: recommendationSnapshot,
+              recheck: recheck,
               save: save, load: load, clear: clear };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ConedMonitor = api;
