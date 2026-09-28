@@ -2,6 +2,8 @@
 (function () {
   "use strict";
   var C = window.ConedCalc, R = C.RATES;
+  // The analytics choke point (analytics.js) — inert stub if it failed to load.
+  var A = window.ConedAnalytics || { track: function () {} };
   var $ = function (id) { return document.getElementById(id); };
   var drop = $("drop"), file = $("file"), err = $("error"), results = $("results");
   var evToggle = $("ev-toggle"), lastParsed = null, lastLabel = "", lastBills = [], lastBillingNote = null;
@@ -17,8 +19,8 @@
     err.textContent = "Couldn't read that file: " + msg;
     err.hidden = false;
     results.hidden = true;
-    // Track parse error for analytics funnel
-    if (window._cf && window._cf.event) { window._cf.event('parse_error'); }
+    // Track parse error for analytics funnel — bare name only, never the message
+    A.track('parse_error');
   }
 
   // The declared facts the eligibility engine gates on (all optional; calc.js defaults apply
@@ -232,8 +234,8 @@
 
   function render(a, label) {
     err.hidden = true;
-    // Track successful parse for analytics funnel
-    if (window._cf && window._cf.event) { window._cf.event('parse_success'); }
+    // Track successful parse for analytics funnel — bare name only
+    A.track('parse_success');
     var saves = a.savingsIfSwitch > 1;                 // >$1 to avoid rounding noise
     var vClass = saves ? "good" : "warn";
     var period = (a.ndays >= 350 && a.ndays <= 385) ? "over the past year" : "over " + a.ndays + " days (annualized)";
@@ -373,8 +375,8 @@
   });
   drop.addEventListener("drop", function (e) { if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
   $("sample-btn").addEventListener("click", function () {
-    // Track sample button click for analytics funnel
-    if (window._cf && window._cf.event) { window._cf.event('sample_click'); }
+    // Track sample button click for analytics funnel — bare name only
+    A.track('sample_click');
     var s = window.CONED_SAMPLE;
     lastParsed = { months: s.months, ndays: s.ndays };
     lastBills = []; lastBillingNote = null;    // the sample ships without billing summaries
