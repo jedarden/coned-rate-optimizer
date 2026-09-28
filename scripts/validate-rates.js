@@ -5,8 +5,8 @@
    consistency, effective-period coverage, freshness of meta.reviewedThrough
    and of each plan's own ratesAsOf against its source's re-verification
    cadence — read from the workflow doc's §2 source table at run time, so gate
-   and doc cannot drift) and its mirror discipline against the defaults baked
-   into public/calc.js.
+   and doc cannot drift — plus the paid-conversion `pricing` policy's shape)
+   and its mirror discipline against the defaults baked into public/calc.js.
 
    Usage:
      node scripts/validate-rates.js              # the gate — exits 1 on any error
@@ -412,6 +412,48 @@ function validate(rates, calcRates, opts) {
     }
   }
 
+  // ---- pricing: the paid-conversion policy (docs/product-strategy.md, §3 of the workflow) ----
+  // Not a tariff — no ConEd publication, no cadence — but it ships in rates.json
+  // and drives charging behavior: validateConsent keys stored consent records to
+  // policyVersion, so a malformed or half-mirrored section is exactly the
+  // incomplete-data-ships failure this gate exists to catch.
+  const pricing = rates.pricing;
+  if (!isPlainObject(pricing)) {
+    err("pricing: section missing (policyVersion, report, threshold, savingsBandPct, refund, basis)");
+  } else {
+    if (!Number.isInteger(pricing.policyVersion) || pricing.policyVersion < 1) {
+      err(`pricing.policyVersion: required positive integer (got ${JSON.stringify(pricing.policyVersion)}) — ` +
+          `stored consent records are keyed to it; bumping it is what invalidates them`);
+    }
+    if (!isPlainObject(pricing.report) || !isPos(pricing.report.price)) {
+      err("pricing.report.price: required positive $ price for the self-service report");
+    }
+    if (!isPos(pricing.threshold)) {
+      err("pricing.threshold: required positive $ amount (first-year savings must clear it, at the low end " +
+          "of the uncertainty range, before the report may be offered)");
+    }
+    ["savingsBandPct", "demandBandPct"].forEach((f) => {
+      if (typeof pricing[f] !== "number" || !(pricing[f] > 0 && pricing[f] < 1)) {
+        err(`pricing.${f}: required fraction in (0, 1) (got ${JSON.stringify(pricing[f])}) — the uncertainty ` +
+            `band applied to the savings range`);
+      }
+    });
+    if (!isPlainObject(pricing.refund) || !Number.isInteger(pricing.refund.windowDays) ||
+        pricing.refund.windowDays <= 0) {
+      err("pricing.refund.windowDays: required positive integer (the published refund window, in days)");
+    }
+    if (!Number.isInteger(pricing.maxPaymentAttempts) || pricing.maxPaymentAttempts <= 0) {
+      err("pricing.maxPaymentAttempts: required positive integer (the payment retry cap)");
+    }
+    if (typeof pricing.chargingCertified !== "boolean") {
+      err("pricing.chargingCertified: required boolean (the ≥20-backtested-accounts certification flag — " +
+          "false is a valid, expected shipping state and means nothing may charge)");
+    }
+    if (typeof pricing.basis !== "string" || !pricing.basis) {
+      err("pricing.basis: required provenance string (which doc section these prices/thresholds come from)");
+    }
+  }
+
   // ---- mirror discipline: rates.json vs the defaults baked into calc.js ----
   // Rule/provenance data must match exactly (the eligibility engine and the test
   // suite's mirroring tests depend on it). Numeric tariff values may diverge —
@@ -421,6 +463,12 @@ function validate(rates, calcRates, opts) {
                         "requires", "lockIn", "solar", "smartChargeConflict"];
   const MIRROR_NUMERIC = ["allIn", "commodity", "delivery", "customer", "offPeak", "peakSummer",
                           "peakWinter", "gross", "offPeakCredit"];
+  // The paid-conversion policy mirrors under the same two-tier rule: identity
+  // fields exact (consent records are keyed to the policy version, and the
+  // refund window is a published consumer term — the lockIn analog), numeric
+  // terms flagged on divergence.
+  const PRICING_EXACT = ["policyVersion", "basis", "chargingCertified", "refund"];
+  const PRICING_NUMERIC = ["threshold", "savingsBandPct", "demandBandPct", "maxPaymentAttempts"];
   ALL_PLAN_KEYS.forEach((key) => {
     const r = rates[key];
     const c = calcRates[key];
@@ -444,6 +492,28 @@ function validate(rates, calcRates, opts) {
       }
     });
   });
+  if (isPlainObject(rates.pricing) && isPlainObject(calcRates.pricing)) {
+    const rp = rates.pricing;
+    const cp = calcRates.pricing;
+    PRICING_EXACT.forEach((f) => {
+      if (rp[f] === undefined && cp[f] === undefined) return;
+      if (!sameJson(rp[f] === undefined ? null : rp[f], cp[f] === undefined ? null : cp[f])) {
+        err(`pricing.${f}: rates.json and calc.js defaults disagree — the paid-conversion policy's ` +
+            `identity fields must be identical in both (update both files in the same change)`);
+      }
+    });
+    PRICING_NUMERIC.forEach((f) => {
+      if (rp[f] !== undefined && cp[f] !== undefined && rp[f] !== cp[f]) {
+        warn(`pricing.${f}: rates.json (${rp[f]}) overrides calc.js default (${cp[f]}) — ` +
+             `allowed (rates.json is the runtime override) but keep both mirrored in the same release`);
+      }
+    });
+    ["report", "concierge", "monitoring"].forEach((f) => {
+      if (rp[f] !== undefined && cp[f] !== undefined && !sameJson(rp[f], cp[f])) {
+        warn(`pricing.${f}: rates.json overrides the calc.js default — keep both mirrored in the same release`);
+      }
+    });
+  }
   ["asOf", "switchTiming"].forEach((f) => {
     if (meta && meta[f] !== undefined && calcMeta[f] !== undefined && meta[f] !== calcMeta[f]) {
       warn(`meta.${f}: rates.json and calc.js wording differ — keep the user-facing note identical in both`);
@@ -566,6 +636,21 @@ function selfTest() {
   check("--allow-stale downgrades a stale per-source cadence to a warning, not an error",
         scaOut.errors.length === 0 &&
         scaOut.warnings.some((w) => /tou\.ratesAsOf: quarterly source.*allow-stale/.test(w)));
+
+  // The paid-conversion policy is gate-checked too (workflow §3 `pricing`):
+  // malformed fields error, identity mirror divergence errors, numeric policy
+  // overrides warn like plan numerics do.
+  mutant("pricing.policyVersion missing", /pricing\.policyVersion: required positive integer/,
+         (m) => { delete m.pricing.policyVersion; });
+  mutant("pricing band out of fraction range", /pricing\.savingsBandPct: required fraction/,
+         (m) => { m.pricing.savingsBandPct = 1.5; });
+  mutant("pricing policyVersion divergence from calc.js", /pricing\.policyVersion: rates\.json and calc\.js defaults disagree/,
+         (m) => { m.pricing.policyVersion = base.pricing.policyVersion + 1; });
+  const pricingOverride = clone(base);
+  pricingOverride.pricing.threshold = base.pricing.threshold + 25;
+  const poOut = validate(pricingOverride, calc.RATES, { now });
+  check("pricing numeric override warns without failing",
+        poOut.errors.length === 0 && poOut.warnings.some((w) => /pricing\.threshold.*overrides/.test(w)));
 
   if (failures.length) {
     console.error(`self-test FAILED (${failures.length}/${total} checks):`);

@@ -32,7 +32,10 @@ override cannot leave them stale. `RATES.meta` fields rates.json omits (e.g.
 eligibility engine and the test suite's mirroring tests depend on it. Numeric
 tariff values may diverge (that is the override mechanism working), but
 divergence is always flagged by the gate so it stays a decision, never an
-accident. In practice a tariff release updates **both files in one commit**
+accident. The paid-conversion policy's identity fields (`pricing.policyVersion`,
+`pricing.basis`, `pricing.chargingCertified`, `pricing.refund`) carry the same
+exact-match rule — consent records are keyed to the policy version (§3
+`pricing`). In practice a tariff release updates **both files in one commit**
 (§6).
 
 Engine configuration that is *not* tariff data stays out of rates.json:
@@ -94,8 +97,8 @@ classic failure here.
 ## 3. Schema — `rates.json` field reference
 
 Top level: `_comment` (what the file is), `meta`, `standard`, `tou`,
-`smartChargeNY`, `steadyUse`, `smartEnergy`, `bill`, `accuracy`. Unknown
-top-level keys are rejected by the gate (a plan rates.json invents is a plan
+`smartChargeNY`, `steadyUse`, `smartEnergy`, `bill`, `accuracy`, `pricing`.
+Unknown top-level keys are rejected by the gate (a plan rates.json invents is a plan
 the engine silently ignores — worse than a missing one).
 
 ### `meta`
@@ -146,6 +149,37 @@ Plan-specific rate fields:
 `passPct` (2), `warnPct` (5), `gateFraction` (0.95) — the bill-reconstruction
 accuracy policy from `docs/product-strategy.md`. `passPct < warnPct` and
 `0 < gateFraction ≤ 1`, gate-enforced.
+
+### `pricing` — the paid-conversion policy (not a tariff)
+
+The charging policy from `docs/product-strategy.md` ("Pricing" + "Accuracy
+gate"): what the paid products cost, when they may be offered, and the
+certification state that gates charging. It rides in rates.json because it is
+data the engine reads (`paidConversion`, `validateConsent`), and it gets the
+same two-file mirror discipline as tariff data — with one consequence worth
+calling out: **stored consent records are keyed to `policyVersion`**, so a
+version that differs between the files silently invalidates consent under one
+of them.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `policyVersion` | integer ≥ 1 | **The charging policy's identity.** Consent records record it; consent given under an older policy is rejected. Exact-mirrored. |
+| `report` | `{ name, price }` | The self-service report product ($29). |
+| `threshold` | $ | Projected first-year savings must clear it — measured at the **low end** of the uncertainty range — before the report may be offered. |
+| `savingsBandPct` / `demandBandPct` | fraction (0, 1) | The uncertainty band applied to the savings range (±5% energy; ±10% for demand-plan targets, whose exact rates are unpublished). |
+| `concierge` | `{ min, pctOfVerifiedSavings }` | The concierge product: $99 min, 20% of verified savings. |
+| `monitoring` | `{ price, per }` | The monitoring product ($29/yr). |
+| `refund` | `{ windowDays }` | The published refund window in days — a consumer term, exact-mirrored like `lockIn`. |
+| `maxPaymentAttempts` | positive integer | Payment retry cap. |
+| `chargingCertified` | boolean | The accuracy-gate certification (≥20 backtested accounts). `false` is a valid, expected shipping state and means nothing may ever charge (test 20 asserts this deployment ships false). Exact-mirrored. |
+| `provider` | string \| `null` | Payment-provider handoff — `null` until charging is armed. |
+| `basis` | string | Provenance: the doc section these numbers come from and the conditions on charging. Exact-mirrored. |
+
+Nothing here is a ConEd fact — no `source` URL, no §2 cadence. Its authority
+is `docs/product-strategy.md` and this repo's own release process; the gate
+still checks its shape (required fields, fraction ranges) and its mirror
+discipline, so a half-shipped policy change fails the deploy like a
+half-shipped tariff change.
 
 ## 4. Effective-period handling
 
@@ -198,8 +232,9 @@ supply the gate themselves — the hard rule in `DEPLOY.md`.)
 
 It is pure (no network, no clock — `now` is injected) and has two modes:
 the **gate** (`validate-rates.js`, exits 1 on any error) and the
-**self-test** (`--self-test`, mutates a known-good copy 18 ways and asserts
-each defect is caught — the validator testing itself, shipped with itself).
+**self-test** (`--self-test`, mutates a known-good copy and asserts each
+seeded defect is caught — it reports its own check count and every check must
+pass; the validator testing itself, shipped with itself).
 
 **Errors (block deploy):**
 
@@ -225,9 +260,15 @@ each defect is caught — the validator testing itself, shipped with itself).
   `delivery + commodity` (only MAC/RDM/surcharges may sit between); latest
   `bill.periods` year not tying to `standard.allIn`/`commodity` (±0.001);
   `accuracy.passPct ≥ warnPct` or `gateFraction` outside (0, 1].
+- `pricing` policy shape (§3): missing section; `policyVersion` not a positive
+  integer; a band fraction outside (0, 1); missing `threshold`,
+  `refund.windowDays`, `report.price`, `maxPaymentAttempts`, `basis`;
+  `chargingCertified` not a boolean.
 - **Mirror discipline:** any rule/provenance field (`name`, `requires`,
   `lockIn`, `solar`, `smartChargeConflict`, `ratesAsOf`, …) differing between
-  rates.json and the calc.js defaults.
+  rates.json and the calc.js defaults — and likewise the `pricing` policy's
+  identity fields (`policyVersion`, `basis`, `chargingCertified`, `refund`),
+  since consent records are keyed to the policy version.
 
 **Warnings (print, do not block):**
 
@@ -237,8 +278,9 @@ each defect is caught — the validator testing itself, shipped with itself).
   entry for the current year (current-year usage is being priced `projected` —
   ConEd publishes on a lag, so this is normal most of the year, but it must be
   seen and the caveat kept, not slept through).
-- **Numeric divergence** between rates.json and calc.js defaults (the override
-  path working — flagged so both sides get mirrored in the same release).
+- **Numeric divergence** between rates.json and calc.js defaults — plan
+  numerics and `pricing` policy terms alike (the override path working —
+  flagged so both sides get mirrored in the same release).
 - `meta.version` / wording divergence between the two files.
 
 `--allow-stale` exists for exactly one case: knowingly shipping data the UI
@@ -262,6 +304,7 @@ UI banner is what a user sees if something ships stale anyway.
 | Current year priced `projected` | gate warning + meta caveat | gate, then UI |
 | rates.json / calc.js divergence (rules) | gate error; tests 10 & 13 | gate + test suite |
 | rates.json / calc.js divergence (numbers) | gate warning; `verify.js` drift warning | gate + verify |
+| Malformed or half-mirrored `pricing` policy | `validate-rates.js` errors | pre-deploy gate |
 | Regressed validator itself | `--self-test` in definition of done | every run |
 
 ## 6. Release process
