@@ -14,7 +14,8 @@
    4. dynamically composed or unknown names fail closed — nothing is sent
    5. static scan: the Cloudflare sender is touched only inside analytics.js
    6. every .track() call site passes a single static allowlisted literal
-   7. the beacon in index.html is configured with nothing but the site token */
+   7. the beacon in index.html is configured with nothing but the site token
+   8. README, privacy notes, and the page copy document the same boundary */
 const fs = require("fs");
 const path = require("path");
 const analytics = require("../public/analytics.js");
@@ -183,6 +184,42 @@ const anaIdx = html.indexOf('src="analytics.js"');
 const appIdx = html.indexOf('src="app.js"');
 assert(anaIdx !== -1 && appIdx !== -1 && anaIdx < appIdx,
   "index.html loads the choke point (analytics.js) before app.js");
+console.log("");
+
+// Test 8: Documentation regression — distinguish the application-server
+// boundary from the intentional Cloudflare analytics request. This keeps a
+// future copy edit from restoring the old, broader "nothing is sent anywhere"
+// promise while the beacon remains enabled.
+console.log("Test 8: Documentation distinguishes file data from Cloudflare analytics");
+const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+const analyticsDoc = fs.readFileSync(path.join(ROOT, "docs/notes/analytics-privacy.md"), "utf8");
+const boundaryDoc = fs.readFileSync(path.join(ROOT, "docs/notes/gbc-data-boundary.md"), "utf8");
+const pageCopy = fs.readFileSync(path.join(ROOT, "public/index.html"), "utf8");
+const compact = (value) => value.replace(/\s+/g, " ").toLowerCase();
+const readmeCopy = compact(readme);
+const analyticsCopy = compact(analyticsDoc);
+const boundaryCopy = compact(boundaryDoc);
+const pageCopyText = compact(pageCopy);
+assert(readmeCopy.includes("file-import path makes no application-server data request") &&
+       readmeCopy.includes("uploads no file, usage, or billing data"),
+  "README documents that file imports do not send file or usage data to the application server");
+assert(readmeCopy.includes("anonymous pageview and allowlisted parse events may still reach cloudflare"),
+  "README documents the intentional Cloudflare analytics exception");
+assert(analyticsCopy.includes("file imports make no application-server data request") &&
+       analyticsCopy.includes("no file, usage, or billing content is sent to the application server or included in analytics"),
+  "analytics privacy note documents the application-server and payload boundary");
+assert(analyticsCopy.includes("the cloudflare beacon is a separate, intentional analytics path"),
+  "analytics privacy note records that the beacon is intentionally retained");
+assert(boundaryCopy.includes("no file, usage, or billing content is uploaded to the application server or included in analytics") &&
+       boundaryCopy.includes("anonymous pageview/allowlisted interaction events may reach cloudflare"),
+  "GBC boundary note includes the same Cloudflare exception");
+assert(pageCopyText.includes("importing a file makes no application-server data request") &&
+       pageCopyText.includes("anonymous pageview and bare allowlisted interaction events may reach cloudflare"),
+  "page privacy copy states both sides of the boundary");
+const privacySurfaces = [readme, analyticsDoc, boundaryDoc, pageCopy].map(compact);
+assert(!privacySurfaces.some((copy) => copy.includes("usage data is never uploaded or sent anywhere") ||
+                                    copy.includes("nothing derived from your usage or billing data is ever transmitted anywhere")),
+  "privacy surfaces do not make the stale no-network promise while the beacon is enabled");
 console.log("");
 
 console.log("Analytics privacy contract tests:");

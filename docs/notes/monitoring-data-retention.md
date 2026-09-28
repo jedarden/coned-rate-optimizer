@@ -9,8 +9,11 @@ history, and question 3 — *am I still on the best eligible rate?* — needs to
 re-asked after rates move. So the page keeps a monitoring history. This document is
 the contract that history runs by: what is kept, where it lives, what it can never
 contain, when it goes away, and how it is deleted. It is the amendment to the
-site's privacy copy — "never uploaded, never sent anywhere" stays true; "never
-stored" is now qualified, precisely, below.
+the site's privacy copy — the retained history is never uploaded or sent
+anywhere — stays true; "never stored" is now qualified, precisely, below. The
+page's separate, intentional Cloudflare Web Analytics beacon may still receive
+anonymous pageview and bare interaction events, never the retained history or
+its usage/billing contents.
 
 ## The contract in one paragraph
 

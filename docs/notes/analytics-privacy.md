@@ -2,17 +2,24 @@
 
 Bead `conedrat-291cf831` · 2026-09-28
 
-The site uses **Cloudflare Web Analytics** — cookie-less, no fingerprinting,
-no cross-site tracking — to answer two questions: how many people visit, and
-whether they can get through the core flow (load the sample, parse a file,
-succeed). This document is the contract for the second part: which events may
+The site intentionally uses **Cloudflare Web Analytics** — cookie-less, no
+fingerprinting, no cross-site tracking — to answer two questions: how many
+people visit, and whether they can get through the core flow (load the sample,
+parse a file, succeed). Anonymous pageview and interaction events may reach
+Cloudflare. This document is the contract for the second part: which events may
 be sent, what they may contain (nothing but a name), and how both are
 mechanically enforced. The GBC data-handling boundary lives separately in
-[`gbc-data-boundary.md`](gbc-data-boundary.md); this contract sits inside the
-same promise — **nothing derived from your usage or billing data is ever
-transmitted anywhere.**
+[`gbc-data-boundary.md`](gbc-data-boundary.md). The boundary is precise:
+**file imports make no application-server data request, and no file, usage, or
+billing content is sent to the application server or included in analytics.**
 
 ## The contract
+
+**File-path boundary.** Loading the static app and rate data still makes the
+ordinary requests needed to render the page, but importing a local file never
+uploads the file or parsed usage/billing data to this site's application
+server. The Cloudflare beacon is a separate, intentional analytics path: it
+may receive an anonymous pageview and the bare allowlisted event names below.
 
 **One sender.** The only code allowed to touch the Cloudflare beacon sender
 (`window._cf`) is `public/analytics.js` — the choke point. The page loads the
@@ -84,5 +91,6 @@ choke point, which tests 2–5 reject.
 The funnel needs only counts: how many tried the sample, how many parses
 succeeded, how many failed. Those three numbers say whether the product works.
 Anything more specific — *which* file failed, *whose* usage was big, *what* a
-bill totaled — would buy nothing for the product and would betray the
-site-wide promise that your data stays on your device.
+bill totaled — would buy nothing for the product. The raw file, parsed usage,
+and billing contents remain on the device; the deliberate exception is only
+the anonymous pageview/allowlisted event signal described above.
