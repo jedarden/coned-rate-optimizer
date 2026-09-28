@@ -317,6 +317,32 @@ The test suite asserts the rule mirroring (tests 10 & 13) plus the focused
 tariff-refresh contract. The UI banner is what a user sees if something ships
 stale anyway.
 
+### Regenerated reconstruction tests
+
+The published bill-history reconstruction test is release-bound, not a loose
+collection of constants. `test/fixtures/bill-reconstruction-tests.json` is
+generated from the source-grounded
+`test/fixtures/bill-history-sc1-nyc.json` fixture and records both that source's
+fingerprint and the complete `rates.json` release fingerprint. Its expected
+bill lines come from the publication fixture; the generator never asks
+`calc.js` to produce its own expected values.
+
+After any change to `rates.json` or the `RATES` release data, regenerate the
+manifest and commit it with the tariff change:
+
+~~~bash
+node scripts/regenerate-reconstruction-tests.js
+node scripts/definition-of-done.sh
+~~~
+
+The definition-of-done gate runs the generator in --check mode. A tariff
+release with an omitted or stale manifest fails before deployment and tells the
+operator to regenerate it. If the ConEd publication fixture itself changes,
+the same command is required after updating the fixture's provenance and
+published expected lines. The focused `test/tariff-refresh.js` regression also
+checks the generated manifest, so the release cannot pass with an unbound
+reconstruction corpus.
+
 ### Recommendation recheck after a tariff release
 
 The browser's monitoring baseline is the hand-off between a published tariff
@@ -394,29 +420,35 @@ precise paths.
    summary prose is now stale. If ConEd's *terms* (not numbers) changed, quote
    the new wording in the `lockIn`/`solar`/`smartChargeConflict` notes in
    **both** files.
-5. **Run the gate and the suite:** `scripts/definition-of-done.sh` —
-   self-test, gate, strict mirror check, tariff-refresh regression, bill
-   reconstruction suite, and `node verify.js`. Green only, and read the
-   warnings. This is a rehearsal, not the enforcement — the pipeline re-runs
-   the identical script as the deploy's build step (step 7).
-6. **Commit both files in one commit** (plus any doc/test updates the change
-   requires), message naming the source and snapshot date, e.g.
+5. **Regenerate the reconstruction test manifest** after any release-data or
+   source-fixture change: `node scripts/regenerate-reconstruction-tests.js`.
+   The generated file records the exact release and publication inputs the
+   reconstruction tests cover.
+6. **Run the gate and the suite:** `scripts/definition-of-done.sh` —
+   self-test, gate, strict mirror check, generated reconstruction-manifest
+   check, tariff-refresh regression, bill reconstruction suite, and
+   `node verify.js`. Green only, and read the warnings. This is a
+   rehearsal, not the enforcement — the pipeline re-runs the identical script
+   as the deploy's build step (step 8).
+7. **Commit both files in one commit** (plus the generated manifest and any
+   doc/test updates the change requires), message naming the source and
+   snapshot date, e.g.
    `feat(rates): 2026 published SC1 averages (historical-averages PDF archived 2026-07-14)`.
    The owning bead records the change (repo rule: every change is covered by a
    bead; deployment verification lands on that bead before it closes).
-7. **Push to `origin`** (Forgejo). Push-to-deploy fires; watch the
+8. **Push to `origin`** (Forgejo). Push-to-deploy fires; watch the
    `website-build` workflow on `iad-ci`
    (`kubectl --server=http://traefik-iad-ci:8001 get workflows -n argo-workflows`).
    The workflow's build step is this same `scripts/definition-of-done.sh`
    (`build-command` in the sensor's coned trigger), and the deploy only
    happens if it exits green — a red gate ends the workflow before
    `wrangler pages deploy` runs.
-8. **Post-deploy verification:** fetch
+9. **Post-deploy verification:** fetch
    `https://coned.jedarden.com/rates.json` and confirm the new
    `reviewedThrough`/version is what production serves, and that
    `https://coned.jedarden.com` loads with the expected plan comparison.
    Record the verification on the bead.
-9. **Rollback** = `git revert` of the release commit + push; Pages redeploys
+10. **Rollback** = `git revert` of the release commit + push; Pages redeploys
    the reverted tree. Do not hand-edit production (break-glass `wrangler pages
    deploy` in `DEPLOY.md` is for pipeline outages only and leaves the next
    push to reconcile).

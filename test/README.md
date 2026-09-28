@@ -12,6 +12,7 @@ This directory contains automated tests and fixtures for the ConEd Rate Optimize
 - `test/fixtures/sample-greenbutton.csv` — Sample Green Button CSV data for testing
 - `test/fixtures/sample-greenbutton.xml` — The same data as a Green Button ESPI Atom feed (epoch seconds in America/New_York, Wh values), for XML tests — also served by the GBC sandbox as the connected interval feed, so the connected path is checked byte-for-byte against the file path
 - `test/fixtures/bill-history-sc1-nyc.json` — ConEd's published NYC SC1 bill history (2023–2025, 300 kWh sample month), the ground truth the bill-reconstruction tests reproduce
+- `test/fixtures/bill-reconstruction-tests.json` — generated release-bound reconstruction cases; regenerate with node scripts/regenerate-reconstruction-tests.js after tariff or source-fixture changes
 - `test/fixtures/eligibility-lock-in-matrix.json` — fixture-driven policy cases for territory, current plan, meter/data, solar, ESCO supply, heat pumps, enrollment timing, and lock-in terms
 
 ## Running Tests

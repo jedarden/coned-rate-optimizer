@@ -683,6 +683,7 @@ async function runFormatTests() {
   console.log("Test 14: Bill reconstruction vs published bill history");
   try {
     const fx = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/bill-history-sc1-nyc.json"), "utf8"));
+    const generated = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/bill-reconstruction-tests.json"), "utf8"));
     const nowYear = new Date().getFullYear();
 
     // Integrity guards on the transcription itself: the fixture is hand-transcribed,
@@ -703,6 +704,10 @@ async function runFormatTests() {
       "year columns average to the published 36-month ¢/kWh column");
     assertClose(avg((d) => d.bill.total), fx.publishedAverage.billTotal, 5e-3,
       "year columns average to the published 36-month bill column");
+    assert(generated.sampleKwh === fx.sampleKwh &&
+      generated.cases.length === yearKeys.length &&
+      generated.cases.every((c) => yearKeys.includes(String(c.year))),
+      "generated reconstruction cases cover every published fixture period");
 
     // rates.json must carry the same bill history as the calc.js defaults (Test 13's
     // mirroring rule, for the new sections), and applyRates() must preserve it.
@@ -719,13 +724,19 @@ async function runFormatTests() {
     const pubFor = (y) => fx.years[String(y)];
     yearKeys.map(Number).forEach((y) => {
       const pub = pubFor(y);
+      const generatedCase = generated.cases.find((c) => c.year === y);
+      assert(generatedCase, `${y}: generated reconstruction case exists`);
       const rec = calc.reconstructBill({ kwh: fx.sampleKwh, year: y }, { includeCustomerCharge: false });
       assert(rec.ratePeriod.year === y && rec.projected === false,
         `${y}: prices at its own published period (not projected)`);
       ["delivery", "commodity", "mac", "rdm", "surcharges"].forEach((c) => {
-        assertClose(rec.components[c], pub.bill[c], 5e-3, `${y}: reconstructed ${c} matches the published line`);
+        assertClose(rec.components[c], generatedCase.expected[c], 5e-3,
+          `${y}: reconstructed ${c} matches the generated published line`);
+        assertClose(generatedCase.expected[c], pub.bill[c], 5e-3,
+          `${y}: generated ${c} line matches the source fixture`);
       });
-      assertClose(rec.total, pub.bill.total, 5e-3, `${y}: reconstructed bill matches the published $${pub.bill.total.toFixed(2)}`);
+      assertClose(rec.total, generatedCase.expected.total, 5e-3,
+        `${y}: reconstructed bill matches the generated published $${pub.bill.total.toFixed(2)}`);
     });
 
     // 2023's RDM is a credit — the line must price negative and say so.

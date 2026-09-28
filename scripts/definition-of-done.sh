@@ -18,6 +18,7 @@ cd "$(dirname "$0")/.."
 node scripts/validate-rates.js --self-test
 node scripts/validate-rates.js
 node scripts/check-rate-drift.js
+node scripts/regenerate-reconstruction-tests.js --check
 node test/tariff-refresh.js
 node test/test.js
 node test/checkout.js

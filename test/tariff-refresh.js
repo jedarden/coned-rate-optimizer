@@ -5,6 +5,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const { findDrift } = require("../scripts/check-rate-drift.js");
+const { buildManifest } = require("../scripts/regenerate-reconstruction-tests.js");
 const { loadCadences, validate } = require("../scripts/validate-rates.js");
 
 const root = path.join(__dirname, "..");
@@ -20,6 +21,12 @@ const checked = validate(rates, calc.RATES, {
 assert.deepStrictEqual(checked.errors, [], `shipped tariff data must validate: ${checked.errors.join("; ")}`);
 assert.strictEqual(rates.meta.version, calc.RATES.meta.version, "release version is mirrored");
 assert.deepStrictEqual(findDrift(rates, calc.RATES), [], "rates.json and calc.js release data are mirrored");
+
+const reconstructionManifest = JSON.parse(fs.readFileSync(
+  path.join(root, "test/fixtures/bill-reconstruction-tests.json"), "utf8"));
+assert.deepStrictEqual(reconstructionManifest, buildManifest(root),
+  "generated reconstruction tests must be regenerated for the current tariff release and source fixture");
+assert(reconstructionManifest.cases.length > 0, "generated reconstruction manifest contains published periods");
 
 const changed = JSON.parse(JSON.stringify(rates));
 changed.standard.allIn += 0.01;
