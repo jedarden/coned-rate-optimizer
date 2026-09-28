@@ -1,12 +1,15 @@
-/* ConEd Rate Optimizer — DOM glue. Uses window.ConedCalc (calc.js). */
+/* ConEd Rate Optimizer — DOM glue. Uses window.ConedCalc (calc.js); persistent
+   monitoring (window.ConedMonitor, monitor.js) when it's available. */
 (function () {
   "use strict";
   var C = window.ConedCalc, R = C.RATES;
   // The analytics choke point (analytics.js) — inert stub if it failed to load.
   var A = window.ConedAnalytics || { track: function () {} };
+  var M = window.ConedMonitor || null;   // monitoring degrades to today's behavior if monitor.js didn't load
   var $ = function (id) { return document.getElementById(id); };
   var drop = $("drop"), file = $("file"), err = $("error"), results = $("results");
   var evToggle = $("ev-toggle"), lastParsed = null, lastLabel = "", lastBills = [], lastBillingNote = null;
+  var series = null, monitorNote = null; // the retained monitoring series; save failures surface once, where the numbers are
 
   var usd = function (n) { return (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
   var usd2 = function (n) { return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
@@ -97,6 +100,7 @@
   function momText(r) {
     var m = r.mom; if (!m) return "";
     var bits = [];
+    if (r.planSwitch) bits.push("you switched to " + planShort(r.planSwitch) + " — not a like-for-like month");
     if (r.partial) bits.push("partial period — " + r.observedDays + " of " + r.calendarDays + " days");
     var rateBit = r.rateDriver
       ? (COMPONENT_LABELS[r.rateDriver.component] || r.rateDriver.component) + " rate " + cents(r.rateDriver.delta)
@@ -120,6 +124,7 @@
       var tags = "";
       if (r.partial) tags += ' <span class="tag warn">partial · ' + r.observedDays + "/" + r.calendarDays + "d</span>";
       if (r.projected) tags += ' <span class="tag">projected rates</span>';
+      if (r.planSwitch) tags += ' <span class="tag">plan switch</span>';
       var cls = function (n) { return n > 0.005 ? "delta-up" : n < -0.005 ? "delta-down" : ""; };
       var diff = r.difference === null ? "" : '<span class="' + cls(r.difference) + '">' + signed(r.difference) + "</span>";
       var change = r.mom
@@ -199,6 +204,63 @@
       (notes.length ? '<ul class="pnotes">' + notes.join("") + "</ul>" : "");
   }
 
+  // ---- persistent monitoring (docs/product-strategy.md, "Month-over-month
+  // experience") ---- The stored series, not just this import's window: the
+  // period table above already renders every retained month. This section
+  // answers the remaining questions over that whole history — the cumulative
+  // actual-vs-best totals with their verification status, what a plan switch
+  // has actually saved since it happened, the current recommendation, and the
+  // retention/deletion contract the store runs by.
+  function monitorSection(a, st) {
+    if (!M || !series || !series.months.length) return "";
+    var d = st.dashboard;
+    if (!d || !d.rows || !d.rows.length) return "";
+    var from = series.months[0].ym, to = series.months[series.months.length - 1].ym;
+    var revised = series.months.filter(function (m) { return m.revisions; }).length +
+                  series.bills.filter(function (b) { return b.revisions; }).length;
+    var parts = [];
+    parts.push('<h3 class="sec">Monitoring — your history, kept in this browser</h3>');
+    parts.push('<p class="legend" id="monitor-status">' + series.months.length + " months retained (" + from + " through " + to + ") · " +
+      series.imports + " import" + (series.imports === 1 ? "" : "s") +
+      (revised ? " · " + revised + " period" + (revised === 1 ? "" : "s") + " revised by a later import" : "") +
+      (series.trimmed ? " · " + series.trimmed + " older months aged out of the " + M.RETENTION_MONTHS + "-month window" : "") + ".</p>");
+
+    // The cumulative answer, with its evidence class stated — "verified" is a
+    // gate result (accuracy gate), never a decoration.
+    var verified = a.confidence && a.confidence.level === "high" &&
+      a.reconciliation && a.reconciliation.rows && a.reconciliation.rows.length;
+    var diffCell = '<span class="' + (d.difference > 0.005 ? "delta-up" : d.difference < -0.005 ? "delta-down" : "") + '">' + usd2(d.difference) + "</span>";
+    parts.push('<div class="stats">' +
+      '<div class="stat"><div class="k">Actually paid · ' + d.rows.length + ' periods</div><div class="v">' + usd2(d.actualTotal) + "</div></div>" +
+      '<div class="stat"><div class="k">Best eligible plan, same periods</div><div class="v">' + usd2(d.bestTotal) + "</div></div>" +
+      '<div class="stat"><div class="k">Cumulative difference</div><div class="v">' + diffCell + "</div></div></div>");
+    parts.push(verified
+      ? '<p class="legend">✓ <strong>Verified:</strong> this cumulative figure rests on ' + a.reconciliation.rows.length + " actual bill" +
+        (a.reconciliation.rows.length === 1 ? "" : "s") + " reconstructed within the 2% accuracy gate — " + a.confidence.reasons.join(" ") + "</p>"
+      : '<p class="legend">⚠ <strong>Estimate, not verified:</strong> no billing history has been reconciled against these periods. Import your billing history (or connect Share My Data) and the same table returns with an accuracy-gate verdict.</p>');
+
+    // Q4 across a real switch: what changing plans has actually saved so far.
+    if (st.switched) {
+      var rz = M.realized(series, st, a, calcOptions());
+      if (rz && rz.savings !== null && rz.savings !== undefined)
+        parts.push('<p class="legend" id="monitor-realized">Since switching to ' + planShort(rz.plan) + " in " + rz.from + ": <strong>" +
+          (rz.savings >= 0 ? "saved " + usd2(rz.savings) : "cost " + usd2(-rz.savings) + " more than") + "</strong> " +
+          "vs staying on " + planShort(rz.priorPlan) + " — over " + rz.months + " month" + (rz.months === 1 ? "" : "s") + " of real bills, not projections.</p>");
+      else if (rz && rz.unpriced && rz.unpriced.length)
+        parts.push('<p class="legend">Your switch to ' + planShort(rz.plan) + " in " + rz.from + " can\'t be priced yet: the counterfactual (" +
+          planShort(rz.priorPlan) + ') needs hourly data for those months, and only monthly buckets are retained. Re-import the hourly export and it\'s computed.</p>');
+    }
+
+    parts.push('<p class="legend" id="monitor-recommendation"><strong>Current recommendation:</strong> ' + a.recommendation + "</p>");
+    parts.push('<div class="actions"><button id="monitor-delete" class="btn-share" type="button">Delete stored data</button></div>');
+
+    // The retention/deletion contract, stated where the data lives.
+    var boundary = 'Monitoring keeps ' + "monthly usage buckets, the bill summaries you've imported, and the eligibility facts you declared — in this browser's local storage, on this device, sent nowhere. Raw hourly data, account identifiers, and credentials are not retained; the connect token never outlives its tab. The most recent " + M.RETENTION_MONTHS + " months are kept; nothing expires on its own. Deleting removes all of it, permanently and immediately.";
+    parts.push('<p class="legend">' + boundary + "</p>");
+    if (monitorNote) parts.push('<p class="legend">⚠ ' + monitorNote + "</p>");
+    return parts.join("");
+  }
+
   // Privacy-safe share card: rendered in-browser, shared/downloaded by the user. Nothing uploaded.
   function shareCard(a) {
     var W = 1200, H = 630, c = document.createElement("canvas"); c.width = W; c.height = H;
@@ -232,7 +294,8 @@
     }, "image/png");
   }
 
-  function render(a, label) {
+  function render(a, label, opts) {
+    opts = opts || {};
     err.hidden = true;
     // Track successful parse for analytics funnel — bare name only
     A.track('parse_success');
@@ -307,6 +370,12 @@
       '<span class="off" style="width:' + of + '%">' + of.toFixed(0) + '% off</span></div>' +
       '<p class="legend">Peak = 8am–midnight · Off-peak = midnight–8am. TOU rewards off-peak-heavy usage; it penalizes peak-heavy usage.</p>';
 
+    // The per-period table renders the retained series (one plan throughout →
+    // the analysis's own dashboard, unchanged; a recorded plan change → actual
+    // priced per segment on the plan that was in effect).
+    var st = (M && series) ? M.stitch(series, a, calcOptions())
+                           : { dashboard: a.dashboard, switched: false, segments: [] };
+
     results.innerHTML =
       confidenceBlock(a) +
       (lastBillingNote ? '<p class="legend">' + lastBillingNote + "</p>" : "") +
@@ -328,23 +397,61 @@
         '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
       '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months, a.smartChargeNY.enabled) +
-      periodSection(a.dashboard) + billsSection(a);
+      periodSection(st.dashboard) + billsSection(a) + monitorSection(a, st);
 
     // footer assumptions/sources
     $("assumptions").innerHTML = '<strong>Assumptions:</strong> ' + R.meta.basis + ' ' + R.meta.peakWindow + ' ' + R.meta.caveats.join(" ");
     $("sources").innerHTML = '<strong>Sources:</strong> ' + R.meta.sources.map(function (s) { return '<a href="' + s + '" target="_blank" rel="noopener">' + s.replace(/^https?:\/\//, "").split("/")[0] + "</a>"; }).join(" · ");
     var sb = $("share-btn"); if (sb) sb.addEventListener("click", function () { shareCard(a); });
+    var del = $("monitor-delete");
+    if (del) del.addEventListener("click", function () {
+      if (!confirm("Delete your stored monitoring history? This removes every retained month and bill summary from this browser, permanently.")) return;
+      if (M) M.clear();
+      series = null; lastParsed = null; lastBills = []; lastLabel = ""; lastBillingNote = null; monitorNote = null;
+      results.hidden = true; results.innerHTML = "";
+    });
     results.hidden = false;
-    results.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!opts.noScroll) results.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Every real import (file or Share My Data) merges into the retained series
+  // and the analysis re-runs over the WHOLE history — importing an older export
+  // after a newer one extends the window backward instead of replacing it.
+  // Hourly detail comes from THIS import only (retention keeps no interval
+  // data), so demand-plan pricing covers the freshly imported window and says
+  // so everywhere demand plans appear. The sample is demo data: analyzed, never
+  // retained.
+  function ingestAndRender(parsed, label, source, bills, billingNote) {
+    if (M) {
+      try {
+        series = M.ingest(series || M.blank(), {
+          source: source, label: label,
+          plan: profileOptions().currentPlan || undefined,
+          months: parsed.months || [], bills: bills || [],
+          importedAt: Date.now(), profile: profileOptions()
+        });
+        M.save(series);
+        monitorNote = null;
+      } catch (e) {
+        monitorNote = "couldn't save this import to local storage (" + e.message + ") — the analysis above covers this session only.";
+      }
+      if (series && series.months.length && series.imports) {
+        var rp = M.restoreParsed(series);
+        lastParsed = { months: rp.months, hours: parsed.hours || [], ndays: rp.ndays };
+        lastBills = rp.bills;                    // retained bill evidence stays live for its own periods
+        lastBillingNote = billingNote || null;
+      } else {
+        lastParsed = parsed; lastBills = bills || []; lastBillingNote = billingNote || null;
+      }
+    } else {
+      lastParsed = parsed; lastBills = bills || []; lastBillingNote = billingNote || null;
+    }
+    lastLabel = label;
+    render(C.analyze(lastParsed, calcOptions()), label);
   }
 
   function handleText(text, label) {
-    try {
-      lastParsed = C.parse(text);
-      lastBills = []; lastBillingNote = null;   // a file import carries no billing feed — drop any connected-account bills
-      lastLabel = label;
-      render(C.analyze(lastParsed, calcOptions()), label);
-    }   // parse() auto-detects CSV vs XML/ESPI
+    try { ingestAndRender(C.parse(text), label, "file", [], null); }   // parse() auto-detects CSV vs XML/ESPI
     catch (e) { showError(e.message); }
   }
   function handleFile(f) {
@@ -387,14 +494,21 @@
     if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
   });
   // Declared eligibility facts (territory, current plan, meter, solar, ESCO, heat pump) —
-  // any change re-runs the rules engine and re-renders.
+  // any change re-runs the rules engine, re-renders, and updates the retained series'
+  // stored profile (what monitoring re-declares on a later visit).
+  function persistProfile() {
+    if (!M || !series) return;
+    try { series.profile = profileOptions(); M.save(series); } catch (e) { /* a failed profile write keeps the last saved state */ }
+  }
   ["pf-territory", "pf-plan", "pf-meter"].forEach(function (id) {
     var el = $(id); if (el) el.addEventListener("change", function () {
+      persistProfile();
       if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
     });
   });
   ["pf-solar", "pf-esco", "pf-heatpump"].forEach(function (id) {
     var el = $(id); if (el) el.addEventListener("change", function () {
+      persistProfile();
       if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
     });
   });
@@ -422,6 +536,31 @@
   }
 
   showVer();
+
+  // Restore the retained series on load — monitoring is the page's memory. A
+  // revisit re-prices every retained month at the current published rates
+  // (strategy "Monitoring": rerun the recommendation after rate or load
+  // changes) and re-checks the retained bill evidence. No scroll: this is the
+  // landing view, not a response to an action.
+  if (M) {
+    var storedSeries = M.load();
+    if (storedSeries && storedSeries.months.length) {
+      series = storedSeries;
+      var p = storedSeries.profile || {};
+      var setSel = function (id, v) { var el = $(id); if (el && v !== undefined && v !== null) el.value = v; };
+      setSel("pf-territory", p.territory); setSel("pf-plan", p.currentPlan); setSel("pf-meter", p.meter);
+      ["solar", "esco", "heatpump"].forEach(function (k) {
+        var el = $("pf-" + k); if (el && p[k] !== undefined && p[k] !== null) el.checked = !!p[k];
+      });
+      var rp = M.restoreParsed(storedSeries);
+      lastParsed = rp;
+      lastBills = rp.bills;
+      lastBillingNote = null;
+      lastLabel = "your retained monitoring history — " + storedSeries.months.length + " months, " +
+        (storedSeries.lastImportedAt ? "last updated " + new Date(storedSeries.lastImportedAt).toLocaleDateString() : "imports merged locally");
+      render(C.analyze(lastParsed, calcOptions()), lastLabel, { noScroll: true });
+    }
+  }
 
   // Optional runtime rate override — editing rates.json updates rates with no code change.
   if (typeof fetch === "function") {
@@ -473,17 +612,19 @@
       gbcShowConnected(conn);
       var label = "ConEd account · usage point " + res.usagePointId +
         (res.billingEntries ? " · " + res.billingEntries + " billing summar" + (res.billingEntries === 1 ? "y" : "ies") + " retrieved" : "");
-      lastParsed = res.parsed;
-      lastBills = res.bills || [];
       // A billing feed that wouldn't parse (or summaries with no total) degrades to
       // unverified — say so where the confidence call is shown, never silently.
-      lastBillingNote = res.billingError
-        ? "Your billing history couldn't be read (" + res.billingError + ") — this analysis runs without actual-bill verification."
+      // Bills retained from earlier pulls still verify their own periods, so a
+      // failed feed this time only means "no new evidence", not "unverified".
+      var nbills = (res.bills || []).length + (series && series.bills ? series.bills.length : 0);
+      var note = res.billingError
+        ? "Your billing history couldn't be read (" + res.billingError + ") — " +
+          (nbills ? "the accuracy gate runs on the " + nbills + " already-retained bill summar" + (nbills === 1 ? "y" : "ies") + "."
+                  : "this analysis runs without actual-bill verification.")
         : (res.billingIncomplete
           ? res.billingIncomplete + " billing summar" + (res.billingIncomplete === 1 ? "y" : "ies") + " had no usable total and won't be checked."
           : null);
-      lastLabel = label;
-      render(C.analyze(lastParsed, calcOptions()), label);
+      ingestAndRender(res.parsed, label, "gbc", res.bills || [], note);
     }).catch(function (e) {
       gbcBusy(false);
       gbcStatus(e.message, "bad");

@@ -17,8 +17,12 @@
         bill-replay section names what couldn't be checked
      3b. a grant revoked mid-session → Re-pull shows the friendly reconnect
         guidance (then a restored grant re-pulls the feeds)
-     4. a file import after connecting resets the billing history (no stale bills)
-     5. Disconnect clears the token and resets the panel
+     4. a file import merges into the retained monitoring series — the
+        connected account's bill evidence stays live for its own periods
+     5. Disconnect clears the token and resets the panel — but NOT the
+        stored monitoring history (deletion is a separate, explicit act)
+     6. reload restores the retained history; "Delete stored data" removes
+        it from localStorage permanently and the page forgets
 
    Not part of scripts/definition-of-done.sh (needs a browser); the Node-only
    authorization harness it mirrors runs there as node test/gbc-sandbox.js. */
@@ -186,11 +190,22 @@ const ok = (cond, msg) => {
     );
     ok(true, "a restored grant re-pulls the feeds through the real page");
 
-    console.log("\n4. File import resets the connected billing history");
+    console.log("\n4. File import merges into the retained monitoring series");
     await page.setInputFiles("#file", path.join(PUBLIC_DIR, "..", "test", "fixtures", "sample-greenbutton.csv"));
-    await page.waitForFunction(() => /no actual bills imported/.test(document.body.textContent));
-    ok(true, "a file upload analyzes without the connected account's bills (stale state dropped)");
-    ok(!/not checked:/.test(await page.textContent("body")), "the bill-replay notes are gone with them");
+    await page.waitForFunction(() => /Showing: sample-greenbutton\.csv/.test(document.body.textContent));
+    ok(true, "the file import renders under its own label");
+    const status = await page.textContent("#monitor-status");
+    // imports: 1 initial pull + 1 restored-grant re-pull (3b) + this file import = 3,
+    // deterministic because the revoked re-pull errors before it can ingest.
+    // revised periods: both months re-measured by the file import + the bill
+    // summary re-pulled in 3b = 3.
+    ok(/3 imports/.test(status) && /2 months retained/.test(status) && /3 periods revised/.test(status),
+      "the Monitoring section reports the merged series (2 months retained · 3 imports · 3 periods revised)");
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("coned-monitor-series-v1") || "null"));
+    ok(!!stored && stored.imports === 3 && stored.months.length === 2 && stored.schema === 1,
+      "the series persisted to localStorage (schema 1, 2 monthly buckets, 3 imports)");
+    ok(/not checked:/.test(await page.textContent("body")),
+      "the connected account's bill evidence stays live for its own period — still uncovered, still named, never priced on invented usage");
 
     console.log("\n5. Disconnect");
     await page.click("#gbc-disconnect");
@@ -198,6 +213,29 @@ const ok = (cond, msg) => {
     ok(true, "disconnect removes the token from sessionStorage");
     await page.waitForSelector("#gbc-connect", { state: "visible" });
     ok(true, "panel resets to the connect state");
+    ok(await page.evaluate(() => localStorage.getItem("coned-monitor-series-v1")) !== null,
+      "disconnect did NOT delete the stored monitoring history (deletion is a separate, explicit act)");
+
+    console.log("\n6. Reload restores the retained history; Delete clears it permanently");
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => /Monitoring — your history, kept in this browser/.test(document.body.textContent));
+    ok(/your retained monitoring history/.test(await page.textContent("body")),
+      "a revisit restores the retained series and says so in the Showing line");
+    const restored = await page.textContent("#monitor-status");
+    ok(/2 months retained \(2025-06 through 2025-12\)/.test(restored),
+      "the restored history reports its window (" + restored.trim().slice(0, 60) + "…)");
+    ok(await page.evaluate(() => JSON.parse(localStorage.getItem("coned-monitor-series-v1")).bills.length === 1),
+      "the retained bill summary survived the reload with its evidence");
+    page.on("dialog", (d) => d.accept());
+    await page.click("#monitor-delete");
+    await page.waitForFunction(() => localStorage.getItem("coned-monitor-series-v1") === null);
+    ok(true, "Delete stored data removes the series from localStorage");
+    await page.waitForFunction(() => document.getElementById("results").hidden);
+    ok(true, "the page forgets everything — results hidden until the next import");
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => document.getElementById("gbc-panel") !== null);
+    ok(await page.evaluate(() => document.getElementById("results").hidden),
+      "after deletion a revisit starts clean — nothing restores");
     ok(pageErrors.length === 0, "no page errors across the whole run" + (pageErrors.length ? ` — ${pageErrors.join(" | ")}` : ""));
   } catch (e) {
     ok(false, `E2E crashed: ${e.message.split("\n")[0]}`);

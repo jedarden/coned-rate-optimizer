@@ -1234,7 +1234,7 @@ try {
   console.log("");
 }
 
-// Test 18: Paid conversion — the free-verdict-to-paid-result flow. The analysis is
+// Test 20: Paid conversion — the free-verdict-to-paid-result flow. The analysis is
 // free and a no-savings result is never hidden behind payment: the $29 report is
 // offered only when the projected first-year saving is real AND meaningful (measured
 // at the LOW end of its uncertainty range), and a charge is taken only when the
@@ -1421,6 +1421,170 @@ try {
   console.log("");
 } catch (e) {
   console.log(`  ✗ Paid-conversion tests failed: ${e.message}`);
+  testsFailed++;
+  console.log("");
+}
+
+
+// Test 21: persistent monthly monitoring — the retained series (monitor.js):
+// merge/revision/retention, the plan timeline, the stitched per-period dashboard
+// across a plan switch, realized switch savings, and the storage contract
+// (round-trip, corrupt input, deletion). The retention/deletion behavior is the
+// documented contract this test pins: newest 36 months kept, deletion removes
+// everything, unreadable stores start fresh rather than crash.
+console.log("Test 21: Persistent monthly monitoring");
+try {
+  // Self-sufficient rate state (earlier tests mutate RATES).
+  calc.applyRates(JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8")));
+  const mon = require("../public/monitor.js");
+  const month = (ym, total, peak, ndays) => ({
+    ym, month: +ym.slice(5, 7), total, peak, off: total - peak,
+    summer: [6, 7, 8, 9].includes(+ym.slice(5, 7)), ndays: ndays || 30
+  });
+
+  // ---- in-memory storage: the contract load/save/clear run against -------
+  const memStore = () => {
+    const m = new Map();
+    return { setItem: (k, v) => m.set(k, String(v)), getItem: (k) => (m.has(k) ? m.get(k) : null),
+             removeItem: (k) => m.delete(k) };
+  };
+
+  // ---- ingest: newest-wins merge with revisions, backward extension -------
+  let s = mon.blank();
+  s = mon.ingest(s, { source: "file", label: "old.csv", plan: "standard", importedAt: 1000,
+    months: [month("2025-06", 400, 280), month("2025-07", 420, 300)] });
+  assert(s.months.length === 2 && s.imports === 1, "first import seeds the series");
+  s = mon.ingest(s, { source: "file", label: "new.csv", plan: "standard", importedAt: 2000,
+    months: [month("2025-07", 430, 305), month("2025-08", 380, 250)] });
+  assert(s.months.map((m) => m.ym).join(",") === "2025-06,2025-07,2025-08",
+    "a later import extends the window backward instead of erasing uncovered months");
+  const jul = s.months.find((m) => m.ym === "2025-07");
+  assert(jul.total === 430 && jul.revisions === 1, "overlapping month takes the newest data and counts a revision");
+  assert(s.months.find((m) => m.ym === "2025-06").total === 400, "months the import doesn't cover stand as measured");
+  assert(s.imports === 2 && s.lastImportedAt === 2000, "import count and timestamp track the series, not the file");
+
+  // Bill summaries: a revised bill replaces its earlier self; others stand.
+  const bill = (ymd1, ymd2, cost, label) => ({ start: ymd1, end: ymd2, days: 30, ymdStart: ymd1, ymdEnd: ymd2, cost, currency: "USD", label });
+  s = mon.ingest(s, { source: "gbc", label: "pull", plan: "standard", importedAt: 3000,
+    months: [], bills: [bill(20250601, 20250701, 151.6, "Jun 2025"), bill(20250701, 20250731, 207.9, "Jul 2025")] });
+  s = mon.ingest(s, { source: "gbc", label: "pull2", plan: "standard", importedAt: 4000,
+    months: [], bills: [bill(20250701, 20250731, 199.5, "Jul 2025")] });
+  assert(s.bills.length === 2, "bill summaries merge on their period label");
+  assert(s.bills.find((b) => b.label === "Jul 2025").cost === 199.5 &&
+         s.bills.find((b) => b.label === "Jul 2025").revisions === 1,
+    "a revised bill replaces its earlier self and counts the revision (strategy: preserve revisions)");
+
+  // ---- retention: the newest 36 buckets are the window; bills fall with it
+  s = mon.blank();
+  const many = [];
+  for (let i = 0; i < 40; i++) {
+    const y = 2023 + Math.floor(i / 12), mo = (i % 12) + 1;
+    many.push(month(`${y}-${String(mo).padStart(2, "0")}`, 300 + i, 200, 30));
+  }
+  s = mon.ingest(s, { source: "file", label: "big.csv", plan: "standard", importedAt: 5000, months: many,
+    bills: [bill(20230101, 20230131, 100, "ancient bill"), bill(20260101, 20260131, 110, "recent bill")] });
+  assert(s.months.length === mon.RETENTION_MONTHS && mon.RETENTION_MONTHS === 36,
+    `retention keeps the newest ${mon.RETENTION_MONTHS} monthly buckets`);
+  assert(s.months[0].ym === "2023-05" && s.trimmed === 4,
+    "the OLDEST buckets age out (2023-01..04 trimmed, count reported)");
+  assert(s.bills.some((b) => b.label === "recent bill") && !s.bills.some((b) => b.label === "ancient bill"),
+    "bills outside the retained window fall out with it");
+
+  // ---- the plan timeline: import-declared switches, deduped ---------------
+  let t = mon.blank();
+  t = mon.ingest(t, { source: "file", label: "a", plan: "standard", importedAt: 1, months: [month("2025-01", 300, 200)] });
+  t = mon.ingest(t, { source: "file", label: "b", plan: "standard", importedAt: 2, months: [month("2025-02", 300, 200)] });
+  assert(t.timeline.length === 0, "a declaration matching the plan in effect records nothing");
+  t = mon.ingest(t, { source: "gbc", label: "c", plan: "tou", importedAt: 3, months: [month("2025-03", 300, 200), month("2025-04", 300, 200)] });
+  assert(t.timeline.length === 1 && t.timeline[0].from === "2025-03" && t.timeline[0].plan === "tou",
+    "a plan change is dated to the earliest month the declaring import covered");
+  assert(mon.planFor(t, "2025-02") === "standard" && mon.planFor(t, "2025-03") === "tou" && mon.planFor(t, "2025-09") === "tou",
+    "planFor resolves the plan in effect per month");
+  assert(JSON.stringify(mon.segments(t).map((g) => g.plan)) === '["standard","tou"]' && mon.segments(t)[0].yms.length === 2,
+    "segments are contiguous same-plan runs over the retained months");
+
+  // ---- restoreParsed: the stored series as analyze() input ----------------
+  const rp = mon.restoreParsed(t);
+  assert(rp.hours.length === 0, "restore carries no hourly data — retention keeps monthly buckets only");
+  assert(rp.ndays === 120, "ndays sums the retained buckets' observed day counts (4 × 30)");
+  assert(rp.months.every((m) => typeof m.summer === "boolean"), "restored buckets carry a real summer flag (costTOU reads it directly)");
+
+  // ---- the persistent dashboard: single-plan passthrough vs stitch --------
+  const a1 = calc.analyze(mon.restoreParsed(s), { profile: { currentPlan: "standard" } });
+  const st1 = mon.stitch(s, a1, {});
+  assert(st1.dashboard === a1.dashboard && st1.switched === false,
+    "one plan throughout → the analysis's own dashboard passes through untouched");
+  assertClose(st1.dashboard.difference, a1.dashboard.difference, 0, "passthrough keeps the cumulative difference");
+
+  // t holds Jan–Apr 2025: standard through Feb, TOU from Mar (the import that
+  // declared TOU covered Mar first).
+  const a2 = calc.analyze(mon.restoreParsed(t), { profile: { currentPlan: "tou" } });
+  const st2 = mon.stitch(t, a2, {});
+  assert(st2.switched === true && st2.dashboard.rows.length === 4, "a recorded switch stitches every segment into one table");
+  assert(st2.dashboard.rows[2].planSwitch === "tou" &&
+         st2.dashboard.rows[0].planSwitch === undefined && st2.dashboard.rows[3].planSwitch === undefined,
+    "the boundary row is tagged with the plan switched to; other rows aren't");
+  const janRow = st2.dashboard.rows[0], febRow = st2.dashboard.rows[1], marRow = st2.dashboard.rows[2], aprRow = st2.dashboard.rows[3];
+  assert(janRow.actual.plan === "standard" && febRow.actual.plan === "standard" &&
+         marRow.actual.plan === "tou" && aprRow.actual.plan === "tou",
+    "actual is priced on the plan in effect that month (the switch repriced the real bills)");
+  assert(marRow.mom !== null && Math.abs(marRow.mom.total - (marRow.actual.total - febRow.actual.total)) < 1e-9,
+    "the boundary's month-over-month decomposition still sums across the plan change");
+  assertClose(st2.dashboard.actualTotal,
+    janRow.actual.total + febRow.actual.total + marRow.actual.total + aprRow.actual.total, 1e-9,
+    "stitched actual total = the sum of each month's own-plan actual");
+  assertClose(st2.dashboard.difference, st2.dashboard.actualTotal - st2.dashboard.bestTotal, 1e-9,
+    "cumulative difference is actual minus best over the whole stitched history");
+
+  // ---- realized switch savings: the counterfactual you didn't live --------
+  const rz = mon.realized(t, st2, a2, {});
+  const stdMarApr = rp.months.slice(2).reduce((sum, m) =>
+    sum + calc.pricePeriod(calc.periodsFrom({ months: [m] })[0], "standard").total, 0);
+  const actualMarApr = marRow.actual.total + aprRow.actual.total;
+  assertClose(rz.savings, stdMarApr - actualMarApr, 1e-9,
+    "realized savings = the prior plan's price of the post-switch months minus what was actually paid");
+  assert(rz.priorPlan === "standard" && rz.plan === "tou" && rz.from === "2025-03" && rz.months === 2,
+    "realized names the switch: from which plan, to which, since when");
+  assert(mon.realized(s, st1, a1, {}) === null, "no switch in the series → no realized figure");
+
+  // Demand-plan counterfactual needs hourly data retention doesn't keep —
+  // omitted with the reason, never approximated.
+  const tDem = mon.ingest(mon.blank(), { source: "file", label: "d1", plan: "standard", importedAt: 1, months: [month("2025-01", 300, 200)] });
+  const tDem2 = mon.ingest(tDem, { source: "gbc", label: "d2", plan: "smart", importedAt: 2, months: [month("2025-02", 300, 200)] });
+  const aDem = calc.analyze(mon.restoreParsed(tDem2), { profile: { currentPlan: "smart" } });
+  const stDem = mon.stitch(tDem2, aDem, {});
+  const rzDem = mon.realized(tDem2, stDem, aDem, {});
+  assert(rzDem && rzDem.savings === null && rzDem.unpriced.length === 1,
+    "an unpriceable counterfactual (demand plan, no retained hours) is reported as unpriced, not zero");
+
+  // ---- the storage contract: round-trip, corrupt input, deletion ----------
+  const store = memStore();
+  mon.save(s, store);
+  const back = mon.load(store);
+  assert(back && back.months.length === s.months.length && back.imports === s.imports,
+    "save/load round-trips the series");
+  assert(mon.load(memStore()) === null, "an empty store reads as no series (not a blank one) — nothing to restore");
+  store.setItem(mon.KEY, "{not json");
+  assert(mon.load(store).months.length === 0 && mon.load(store).schema === mon.SCHEMA,
+    "corrupt stored JSON starts fresh instead of crashing the page");
+  store.setItem(mon.KEY, JSON.stringify({ schema: 99, months: [] }));
+  assert(mon.load(store).months.length === 0, "a series from another schema version starts fresh");
+  store.setItem(mon.KEY, JSON.stringify({ schema: 1, months: "nope" }));
+  assert(mon.load(store).months.length === 0, "a series with a malformed month list starts fresh");
+  mon.save(s, store);
+  mon.clear(store);
+  assert(mon.load(store) === null, "deletion removes the whole series — permanently, immediately");
+
+  // save() without storage throws — the caller must be able to say so rather
+  // than lose an import silently.
+  let threw = false;
+  try { mon.save(s, null); } catch (e) { threw = true; }
+  assert(threw, "saving with no storage available throws (the UI surfaces it, data isn't silently dropped)");
+
+  console.log("");
+} catch (e) {
+  console.log(`  ✗ Persistent-monitoring tests failed: ${e.message}`);
+  console.log(e.stack);
   testsFailed++;
   console.log("");
 }
