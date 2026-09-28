@@ -1,0 +1,158 @@
+{
+  "_comment": "Eligibility and lock-in regression cases. Expected reasons and notes are the documented policy surface; solar remains advisory and therefore does not exclude a plan.",
+  "policy": {
+    "switchTimingIncludes": "future meter read",
+    "lockIn": {
+      "standard": null,
+      "tou": {
+        "minStayMonths": 12,
+        "reenrollBlockMonths": 18,
+        "escoExempt": true,
+        "noteIncludes": ["one-year", "18 months"]
+      },
+      "steadyUse": {
+        "cancelAnytime": true,
+        "reenrollBlockMonths": 18,
+        "noteIncludes": ["cancel anytime", "18 months"]
+      },
+      "smartEnergy": {
+        "cancelAnytime": true,
+        "reenrollBlockMonths": 18,
+        "noteIncludes": ["cancel anytime", "18 months"]
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "default-sc1-nyc-smart",
+      "profile": {},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard",
+      "planNotes": {
+        "tou": ["one-year", "18 months"],
+        "steady": ["Lock-in", "18 months"],
+        "smart": ["Lock-in", "18 months"]
+      },
+      "planNotesAbsent": {"standard": ["Lock-in"]}
+    },
+    {
+      "id": "current-plan-tou",
+      "profile": {"currentPlan": "tou"},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "tou",
+      "planNotes": {"tou": ["already on this plan"]},
+      "planNotesAbsent": {"tou": ["Lock-in", "one-year"]}
+    },
+    {
+      "id": "current-plan-steady",
+      "profile": {"currentPlan": "steady"},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "steady",
+      "planNotes": {"steady": ["already on this plan"]},
+      "planNotesAbsent": {"steady": ["Lock-in"]}
+    },
+    {
+      "id": "current-plan-smart",
+      "profile": {"currentPlan": "smart"},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "smart",
+      "planNotes": {"smart": ["already on this plan"]},
+      "planNotesAbsent": {"smart": ["Lock-in"]}
+    },
+    {
+      "id": "legacy-meter-excludes-demand",
+      "profile": {"meter": "legacy"},
+      "eligiblePlans": ["standard", "tou"],
+      "currentPlan": "standard",
+      "excludedPlans": {
+        "steady": "smart meter",
+        "smart": "smart meter"
+      }
+    },
+    {
+      "id": "smart-meter-without-interval-data",
+      "input": "months-only",
+      "profile": {"meter": "smart"},
+      "eligiblePlans": ["standard", "tou"],
+      "currentPlan": "standard",
+      "excludedPlans": {
+        "steady": "interval data",
+        "smart": "interval data"
+      }
+    },
+    {
+      "id": "outside-coned-territory",
+      "profile": {"territory": "outside"},
+      "eligiblePlans": [],
+      "currentPlan": "standard",
+      "blockers": ["Con Edison electric customers"],
+      "excludedPlans": {
+        "standard": "not a ConEd electric account",
+        "tou": "not a ConEd electric account",
+        "steady": "not a ConEd electric account",
+        "smart": "not a ConEd electric account"
+      }
+    },
+    {
+      "id": "westchester-territory",
+      "profile": {"territory": "westchester"},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard",
+      "globalNotes": ["Westchester"]
+    },
+    {
+      "id": "non-sc1-account",
+      "profile": {"serviceClass": "SC2"},
+      "eligiblePlans": [],
+      "currentPlan": "standard",
+      "blockers": ["SC1 residential"],
+      "excludedPlans": {
+        "standard": "SC1 residential accounts only",
+        "tou": "SC1 residential accounts only",
+        "steady": "SC1 residential accounts only",
+        "smart": "SC1 residential accounts only"
+      }
+    },
+    {
+      "id": "solar-guidance-is-advisory",
+      "profile": {"solar": true},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard",
+      "planNotes": {
+        "steady": ["solar", "not a good fit"],
+        "smart": ["solar", "does not recommend"]
+      }
+    },
+    {
+      "id": "esco-supply-exempts-tou-commitment",
+      "profile": {"esco": true},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard",
+      "globalNotes": ["ESCO", "contract price"],
+      "planNotes": {"tou": ["ESCO", "exempts", "one-year"]}
+    },
+    {
+      "id": "heat-pump-price-guarantee",
+      "profile": {"heatPump": true},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard",
+      "planNotes": {"steady": ["heat-pump", "price guarantee", "12-month"]}
+    },
+    {
+      "id": "non-heat-pump-no-guarantee",
+      "profile": {"heatPump": false},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard",
+      "planNotesAbsent": {"steady": ["price guarantee"]}
+    },
+    {
+      "id": "enrollment-timing-and-tou-seasonality",
+      "profile": {},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard",
+      "globalNotes": [],
+      "planNotes": {"tou": ["Seasonality", "summer", "rest of the year"]},
+      "timingCase": true
+    }
+  ]
+}

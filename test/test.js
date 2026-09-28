@@ -545,6 +545,117 @@ async function runFormatTests() {
     console.log("");
   }
 
+  // Test 13b: fixture-driven eligibility/lock-in regression matrix. Every case
+  // partitions the modeled inventory into eligible and excluded plans, then
+  // checks that eligible alternatives still have a real priced comparison entry.
+  console.log("Test 13b: Eligibility & lock-in regression matrix");
+  try {
+    const matrix = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/eligibility-lock-in-matrix.json"), "utf8"));
+    const allPlanKeys = ["standard", "tou", "steady", "smart"];
+    const ratesJson = JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8"));
+
+    assert(calc.RATES.meta.switchTiming.includes(matrix.policy.switchTimingIncludes),
+      "switch timing policy says enrollment takes effect with a future meter read");
+    Object.keys(matrix.policy.lockIn).forEach((key) => {
+      const expected = matrix.policy.lockIn[key];
+      const actual = calc.RATES[key].lockIn;
+      if (expected === null) {
+        assert(actual === null, `${key} has no lock-in policy`);
+        return;
+      }
+      Object.keys(expected).forEach((field) => {
+        if (field === "noteIncludes") return;
+        assert(actual && actual[field] === expected[field], `${key} lock-in ${field} is ${expected[field]}`);
+      });
+      (expected.noteIncludes || []).forEach((phrase) => {
+        assert(actual && actual.note.includes(phrase), `${key} lock-in note documents "${phrase}"`);
+      });
+      assert(JSON.stringify(actual) === JSON.stringify(ratesJson[key].lockIn),
+        `${key} lock-in policy remains mirrored in rates.json`);
+    });
+
+    const parsed = calc.parseGreenButton(fs.readFileSync(path.join(__dirname, "fixtures/sample-greenbutton.csv"), "utf8"));
+    const monthsOnly = { months: parsed.months, ndays: parsed.ndays };
+    matrix.cases.forEach((fixture) => {
+      const input = fixture.input === "months-only" ? monthsOnly : parsed;
+      const analysis = calc.analyze(input, { profile: fixture.profile });
+      const verdicts = analysis.eligibility.verdicts;
+      const expectedEligible = fixture.eligiblePlans.slice().sort();
+      const expectedExcluded = Object.keys(fixture.excludedPlans || {}).sort();
+      const actualEligible = allPlanKeys.filter((key) => verdicts[key].available).sort();
+      assert(JSON.stringify(actualEligible) === JSON.stringify(expectedEligible),
+        `${fixture.id}: eligible plan set matches the policy matrix`);
+      assert(JSON.stringify(expectedExcluded) === JSON.stringify(allPlanKeys.filter((key) => !verdicts[key].available).sort()),
+        `${fixture.id}: every ineligible plan is excluded`);
+      assert(verdicts[fixture.currentPlan].current === true,
+        `${fixture.id}: ${fixture.currentPlan} is the declared current plan`);
+      assert(analysis.plans.find((plan) => plan.current).key === fixture.currentPlan,
+        `${fixture.id}: analysis carries the declared current plan`);
+
+      (fixture.blockers || []).forEach((phrase) => {
+        assert(analysis.eligibility.blockers.some((note) => note.includes(phrase)),
+          `${fixture.id}: blocker documents "${phrase}"`);
+      });
+      (fixture.globalNotes || []).forEach((phrase) => {
+        assert(analysis.eligibility.notes.some((note) => note.includes(phrase)),
+          `${fixture.id}: global note documents "${phrase}"`);
+      });
+      Object.keys(fixture.planNotes || {}).forEach((key) => {
+        const notes = verdicts[key].notes.join(" ");
+        fixture.planNotes[key].forEach((phrase) => {
+          assert(notes.includes(phrase), `${fixture.id}: ${key} note documents "${phrase}"`);
+        });
+      });
+      Object.keys(fixture.planNotesAbsent || {}).forEach((key) => {
+        const notes = verdicts[key].notes.join(" ");
+        fixture.planNotesAbsent[key].forEach((phrase) => {
+          assert(!notes.includes(phrase), `${fixture.id}: ${key} omits "${phrase}" when not applicable`);
+        });
+      });
+
+      allPlanKeys.forEach((key) => {
+        const verdict = verdicts[key];
+        const plan = analysis.plans.find((item) => item.key === key);
+        const comparison = analysis.comparison.find((item) => item.key === key);
+        if (fixture.excludedPlans && fixture.excludedPlans[key]) {
+          assert(!verdict.available && verdict.reason.includes(fixture.excludedPlans[key]),
+            `${fixture.id}: ${key} exclusion reason is documented ("${verdict.reason}")`);
+          if (plan) assert(plan.avail === false && plan.excludedReason.includes(fixture.excludedPlans[key]),
+            `${fixture.id}: ${key} priced output carries its exclusion reason`);
+          if (comparison) assert(comparison.avail === false && comparison.excludedReason.includes(fixture.excludedPlans[key]),
+            `${fixture.id}: ${key} comparison carries its exclusion reason`);
+          return;
+        }
+        assert(verdict.available, `${fixture.id}: ${key} remains eligible`);
+        if (plan) assert(plan.avail === true && Number.isFinite(plan.cost) && plan.cost > 0,
+          `${fixture.id}: eligible ${key} plan is priced`);
+        if (comparison) assert(comparison.avail === true && Number.isFinite(comparison.annualCost) && comparison.annualCost > 0,
+          `${fixture.id}: eligible ${key} alternative has an annual price`);
+      });
+
+      const alternatives = expectedEligible.filter((key) => key !== fixture.currentPlan);
+      if (alternatives.length) {
+        assert(analysis.switchTarget && alternatives.includes(analysis.switchTarget.key),
+          `${fixture.id}: switch target is an eligible alternative`);
+        assert(analysis.switchTarget.key !== fixture.currentPlan,
+          `${fixture.id}: current plan is never a switch target`);
+      } else {
+        assert(analysis.switchTarget === null, `${fixture.id}: no alternative is offered when none is eligible`);
+      }
+      if (fixture.timingCase) {
+        assert(calc.RATES.meta.switchTiming.includes("future meter read"),
+          `${fixture.id}: enrollment timing is retained in the published policy`);
+        assert(calc.RATES.tou.peakSummer > calc.RATES.tou.peakWinter,
+          `${fixture.id}: TOU summer peak pricing is higher than the rest-of-year rate`);
+      }
+    });
+    console.log("");
+  } catch (e) {
+    console.log(`  ✗ Eligibility matrix tests failed: ${e.message}`);
+    testsFailed++;
+    console.log("");
+  }
+
   // Test 14: bill reconstruction — the engine must reproduce ConEd's real published
   // bill history (test/fixtures/bill-history-sc1-nyc.json) before any counterfactual
   // built on it can be trusted (docs/product-strategy.md, "Historical backtest").
