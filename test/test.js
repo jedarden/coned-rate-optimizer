@@ -1545,10 +1545,11 @@ try {
 // Test 21: persistent monthly monitoring — the retained series (monitor.js):
 // merge/revision/retention, the plan timeline, the stitched per-period dashboard
 // across a plan switch, realized switch savings, and the storage contract
-// (round-trip, corrupt input, deletion), raw-data privacy, and the no-network
-// localStorage boundary. The retention/deletion behavior is the documented
-// contract this test pins: newest 36 months kept, deletion removes everything,
-// unreadable stores start fresh rather than crash.
+// (round-trip, corrupt input, deletion), fingerprints, demo exclusion,
+// raw-data privacy, and the no-network localStorage boundary. The
+// retention/deletion behavior is the documented contract this test pins:
+// newest 36 months kept, deletion removes everything, unreadable stores start
+// fresh rather than crash.
 console.log("Test 21: Persistent monthly monitoring");
 try {
   // Self-sufficient rate state (earlier tests mutate RATES).
@@ -1590,6 +1591,11 @@ try {
   assert(s.bills.find((b) => b.label === "Jul 2025").cost === 199.5 &&
          s.bills.find((b) => b.label === "Jul 2025").revisions === 1,
     "a revised bill replaces its earlier self and counts the revision (strategy: preserve revisions)");
+  s = mon.ingest(s, { source: "gbc", label: "pull3", plan: "standard", importedAt: 5000,
+    months: [], bills: [bill(20250701, 20250731, 198.4, "Jul 2025")] });
+  assert(s.bills.find((b) => b.label === "Jul 2025").cost === 198.4 &&
+         s.bills.find((b) => b.label === "Jul 2025").revisions === 2,
+    "repeated bill imports keep the newest summary and accumulate revision counts");
 
   // ---- retention: the newest 36 buckets are the window; bills fall with it
   s = mon.blank();
@@ -1599,13 +1605,23 @@ try {
     many.push(month(`${y}-${String(mo).padStart(2, "0")}`, 300 + i, 200, 30));
   }
   s = mon.ingest(s, { source: "file", label: "big.csv", plan: "standard", importedAt: 5000, months: many,
-    bills: [bill(20230101, 20230131, 100, "ancient bill"), bill(20260101, 20260131, 110, "recent bill")] });
+    bills: [bill(20230101, 20230131, 100, "ancient bill"), bill(20230501, 20230531, 105, "window-edge bill"),
+      bill(20260101, 20260131, 110, "recent bill")] });
   assert(s.months.length === mon.RETENTION_MONTHS && mon.RETENTION_MONTHS === 36,
     `retention keeps the newest ${mon.RETENTION_MONTHS} monthly buckets`);
   assert(s.months[0].ym === "2023-05" && s.trimmed === 4,
     "the OLDEST buckets age out (2023-01..04 trimmed, count reported)");
-  assert(s.bills.some((b) => b.label === "recent bill") && !s.bills.some((b) => b.label === "ancient bill"),
-    "bills outside the retained window fall out with it");
+  assert(s.bills.some((b) => b.label === "recent bill") && s.bills.some((b) => b.label === "window-edge bill") &&
+         !s.bills.some((b) => b.label === "ancient bill"),
+    "bills outside the retained window fall out while the oldest in-window bill remains");
+  s = mon.ingest(s, { source: "file", label: "new-month.csv", plan: "standard", importedAt: 6000,
+    months: [month("2026-05", 340, 220)], bills: [] });
+  assert(s.months.length === mon.RETENTION_MONTHS && s.months[0].ym === "2023-06" &&
+         s.months[s.months.length - 1].ym === "2026-05" && s.trimmed === 5,
+    "a later import rolls the window forward by dropping exactly its oldest bucket");
+  assert(!s.bills.some((b) => b.label === "window-edge bill") &&
+         s.bills.some((b) => b.label === "recent bill"),
+    "a bill is pruned as soon as its period falls behind the rolling window");
 
   // ---- the plan timeline: import-declared switches, deduped ---------------
   let t = mon.blank();
@@ -1688,9 +1704,14 @@ try {
   assert(mon.load(store).months.length === 0, "a series from another schema version starts fresh");
   store.setItem(mon.KEY, JSON.stringify({ schema: 1, months: "nope" }));
   assert(mon.load(store).months.length === 0, "a series with a malformed month list starts fresh");
+  store.setItem(mon.KEY, JSON.stringify({ schema: mon.SCHEMA, months: [month("2026-02", 250, 150)] }));
+  const compatible = mon.load(store);
+  assert(compatible.schema === mon.SCHEMA && compatible.months.length === 1 && compatible.months[0].ym === "2026-02",
+    "the current schema version remains loadable after compatibility checks");
   mon.save(s, store);
   mon.clear(store);
-  assert(mon.load(store) === null, "deletion removes the whole series — permanently, immediately");
+  assert(store.getItem(mon.KEY) === null && mon.load(store) === null,
+    "deletion removes the whole series — permanently, immediately");
 
   // save() without storage throws — the caller must be able to say so rather
   // than lose an import silently.
@@ -1734,6 +1755,48 @@ try {
     profile: { territory: "nyc", currentPlan: "standard", meter: "smart", token: secret } }));
   assert(!JSON.stringify(mon.load(privacyStore)).includes(secret),
     "loading an older or hand-written record also strips unknown profile fields");
+
+  // ---- derived fingerprints: deterministic, input-sensitive, and local ----
+  const fingerprintAnalysis = calc.analyze(mon.restoreParsed(privacySeries), { profile: privacySeries.profile });
+  const firstFingerprint = mon.recheck(privacySeries, fingerprintAnalysis, { trigger: "usage", now: 7000 });
+  assert(typeof firstFingerprint.state.usageFingerprint === "string" &&
+         typeof firstFingerprint.state.profileFingerprint === "string" &&
+         typeof firstFingerprint.state.rateFingerprint === "string",
+    "a recheck stores usage, profile, and rate fingerprints instead of raw inputs");
+  assert(firstFingerprint.state.rateFingerprint === mon.rateFingerprint(calc.RATES),
+    "the persisted rate fingerprint is derived from the current published rates");
+  const equivalentRates = JSON.parse(JSON.stringify(calc.RATES));
+  assert(mon.rateFingerprint(equivalentRates) === firstFingerprint.state.rateFingerprint,
+    "rate fingerprints are stable across equivalent object serialization");
+  equivalentRates.tou.offPeak += 0.001;
+  assert(mon.rateFingerprint(equivalentRates) !== firstFingerprint.state.rateFingerprint,
+    "a tariff input change produces a different rate fingerprint");
+  const changedFingerprintSeries = mon.ingest(privacySeries, {
+    source: "file", importedAt: 8000, months: [month("2026-01", 301, 200)], profile: privacySeries.profile
+  });
+  changedFingerprintSeries.recheck = firstFingerprint.state;
+  const changedFingerprint = mon.recheck(changedFingerprintSeries,
+    calc.analyze(mon.restoreParsed(changedFingerprintSeries), { profile: privacySeries.profile }),
+    { trigger: "usage", now: 8000 });
+  assert(changedFingerprint.usageChanged === true &&
+         changedFingerprint.state.usageFingerprint !== firstFingerprint.state.usageFingerprint,
+    "a revised monthly bucket changes the usage fingerprint without retaining intervals");
+  changedFingerprintSeries.recheck = changedFingerprint.state;
+  const fingerprintStore = memStore();
+  mon.save(changedFingerprintSeries, fingerprintStore);
+  assert(mon.load(fingerprintStore).recheck.usageFingerprint === changedFingerprint.state.usageFingerprint &&
+         !fingerprintStore.getItem(mon.KEY).includes(secret),
+    "fingerprints round-trip through localStorage without carrying forbidden values");
+
+  // The built-in sample is an analysis-only demo. Its button path renders the
+  // sample directly and must never enter the real-import persistence path.
+  const appSource = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
+  const sampleStart = appSource.indexOf('$("sample-btn").addEventListener("click"');
+  const sampleEnd = appSource.indexOf("\n  });\n  if (evToggle", sampleStart);
+  const sampleHandler = sampleStart >= 0 && sampleEnd > sampleStart ? appSource.slice(sampleStart, sampleEnd) : "";
+  assert(sampleHandler.includes("window.CONED_SAMPLE") && !sampleHandler.includes("ingestAndRender") &&
+         !sampleHandler.includes("M.ingest"),
+    "the demo sample is analyzed in place and excluded from monitoring ingestion");
 
   // The monitor's storage boundary is localStorage only. Guard the common
   // browser network entry points while exercising the default-store path.
