@@ -56,6 +56,9 @@ token appears in any request body, or if any interval/billing payload bytes
 ever arrive inside one. Feed payloads exist only in the responses the Data
 Custodian sends, never in anything received — and every Data Custodian request
 must be a direct GET, i.e. browser-to-ConEd with no application-server relay.
+The exchange endpoint's full request/response/error contract — including these
+no-logging and no-retention rules, each with its own named sandbox assertion
+(section 8) — is specified in [`gbc-token-api.md`](gbc-token-api.md).
 
 ### One deployment dependency the E2E caught: Data Custodian CORS
 

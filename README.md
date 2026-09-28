@@ -86,6 +86,7 @@ public/            <- deploy this directory to Cloudflare Pages
   feedback.js      <- Agentation feedback toolbar (loads only with ?feedback=1)
 functions/
   api/gbc/token.js <- Pages Function: OAuth code→token exchange; retains nothing, logs nothing
+                      (contract spec: docs/notes/gbc-token-api.md)
 docs/
   notes/gbc-data-boundary.md <- the GBC data-handling boundary (who sees/keeps what)
 verify.js          <- Node verification script

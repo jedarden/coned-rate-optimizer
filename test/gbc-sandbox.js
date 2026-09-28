@@ -103,11 +103,11 @@ function startSandbox(options) {
     if (req.method === "POST") {
       readBody(req).then((body) => {
         req.rawBody = body;
-        requests.push({ method: req.method, url, body });
+        requests.push({ method: req.method, url, body, headers: Object.assign({}, req.headers) });
         dispatch();
       }, dispatch);
     } else {
-      requests.push({ method: req.method, url });
+      requests.push({ method: req.method, url, headers: Object.assign({}, req.headers) });
       dispatch();
     }
   });
@@ -134,6 +134,12 @@ function startSandbox(options) {
 
     // ---- OAuth 2.0 token endpoint (client auth: Basic or body) ----
     if (u.pathname === "/token" && req.method === "POST") {
+      // Contract-variant routes: deliberately broken success responses, used
+      // only by the section 8 upstream-malformed cases (the query keeps them
+      // out of the normal flow; section 9's POST-path invariant strips it).
+      const variant = u.searchParams.get("variant");
+      if (variant === "badjson") return send(res, 200, "<html>totally not json</html>", "text/html");
+      if (variant === "notoken") return send(res, 200, JSON.stringify({ token_type: "Bearer", expires_in: 3600 }));
       const form = new URLSearchParams(await readBody(req));
       const expectedBasic = Buffer.from(clientId + ":" + clientSecret).toString("base64");
       const givenBasic = String(req.headers.authorization || "").replace(/^Basic\s+/i, "");
@@ -338,7 +344,7 @@ async function run() {
     (e) => ok(/reconnect/.test(e.message), "stale connection refused before any request")
   );
 
-  console.log("\n8. Pages Function guard rails (invoked directly)");
+  console.log("\n8. Pages Function guard rails + token API contract (invoked directly)");
   const call = (env, body, headers) => worker.onRequestPost({
     request: new Request(box.origin + "/api/gbc/token", {
       method: "POST", headers: Object.assign({ "content-type": "application/json" }, headers || {}), body: JSON.stringify(body)
@@ -349,16 +355,119 @@ async function run() {
   ok(noEnv.status === 503 && (await noEnv.json()).error === "gbc_not_configured", "missing env bindings → 503 gbc_not_configured");
   const badBody = await call({ GBC_CLIENT_ID: "a", GBC_CLIENT_SECRET: "b", GBC_TOKEN_URL: box.origin + "/token" }, { redirectUri: "http://127.0.0.1/" });
   ok(badBody.status === 400, "missing code → 400");
-  const foreign = await call({ GBC_CLIENT_ID: "a", GBC_CLIENT_SECRET: "b", GBC_TOKEN_URL: box.origin + "/token" },
-    { code: "x", redirectUri: "http://127.0.0.1/" }, { origin: "https://evil.example" });
-  ok(foreign.status === 403, "cross-origin exchange attempt → 403");
-  const bodyAuth = await worker.onRequestPost({
+  const tokEnv = { GBC_CLIENT_ID: box.clientId, GBC_CLIENT_SECRET: box.clientSecret, GBC_TOKEN_URL: box.origin + "/token" };
+  const tokenPosts = () => box.requests.filter((r) => r.method === "POST" && r.url.split("?")[0] === "/token");
+  // A fresh single-use code every time: codes burn on their first exchange.
+  const mintCode = async () => {
+    const r = await fetch(gbc.authorizeUrl(cfg, gbc.randomState(), redirectUri), { redirect: "manual" });
+    return new URL(r.headers.get("location")).searchParams.get("code");
+  };
+  // Runs fn with console.* captured; resolves { out, logged } — the worker
+  // contract says it logs nothing (docs/notes/gbc-token-api.md).
+  const quiet = async (fn) => {
+    const methods = ["log", "info", "warn", "error", "debug", "trace"];
+    const orig = methods.map((m) => console[m]);
+    const logged = [];
+    methods.forEach((m) => { console[m] = (...a) => logged.push(m + ": " + a.join(" ")); });
+    try { return { out: await fn(), logged }; }
+    finally { methods.forEach((m, i) => { console[m] = orig[i]; }); }
+  };
+
+  // --- happy path: valid code, absent origin (curl/server-to-server case) ---
+  const preGood = tokenPosts().length;
+  const goodCode = await mintCode();
+  const good = await call(tokEnv, { code: goodCode, redirectUri });
+  const goodBody = await good.json();
+  ok(good.status === 200, "valid code + redirectUri → 200");
+  ok(goodBody.access_token === box.accessToken && goodBody.token_type === "Bearer" && goodBody.expires_in === 3600,
+     "success body is the upstream token response (access_token/token_type/expires_in)");
+  ok(good.headers.get("cache-control") === "no-store" && /application\/json/.test(good.headers.get("content-type") || ""),
+     "success response is JSON with cache-control: no-store");
+  ok(goodBody.error === undefined && goodBody.error_description === undefined, "success body carries no error fields");
+  const basicPost = tokenPosts()[preGood]; // the upstream call behind `good`
+  const basicForm = new URLSearchParams(basicPost.body);
+  ok(basicForm.get("grant_type") === "authorization_code", "upstream request: grant_type=authorization_code");
+  ok(basicForm.get("code") === goodCode && basicForm.get("redirect_uri") === redirectUri,
+     "upstream request: code and redirect_uri echoed verbatim");
+  ok(!basicForm.has("client_id") && !basicForm.has("client_secret"), "basic auth style keeps credentials out of the form");
+  ok(basicPost.headers.authorization === "Basic " + Buffer.from(box.clientId + ":" + box.clientSecret).toString("base64"),
+     "basic auth style sends authorization: Basic base64(client_id:client_secret)");
+  ok(basicPost.headers["content-type"] === "application/x-www-form-urlencoded" && basicPost.headers.accept === "application/json",
+     "upstream request is form-encoded with accept: application/json");
+  const sameOrigin = await call(tokEnv, { code: await mintCode(), redirectUri }, { origin: box.origin });
+  ok(sameOrigin.status === 200, "a matching Origin header is accepted");
+
+  // --- request-side errors ---
+  const noRedirect = await call(tokEnv, { code: "x" });
+  ok(noRedirect.status === 400 && (await noRedirect.json()).error === "invalid_request", "missing redirectUri → 400 invalid_request");
+  const badJson = await worker.onRequestPost({
     request: new Request(box.origin + "/api/gbc/token", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "x", redirectUri: "http://127.0.0.1/" })
+      method: "POST", headers: { "content-type": "application/json" }, body: "{not json"
     }),
-    env: { GBC_CLIENT_ID: box.clientId, GBC_CLIENT_SECRET: box.clientSecret, GBC_TOKEN_URL: box.origin + "/token", GBC_TOKEN_AUTH: "body" }
+    env: tokEnv
   });
-  ok(bodyAuth.status === 400, "body-style client auth reaches the token endpoint (bogus code → upstream 400 passthrough)");
+  ok(badJson.status === 400 && (await badJson.json()).error === "invalid_request", "non-JSON body → 400 invalid_request");
+  const preForeign = tokenPosts().length;
+  const foreign = await call(tokEnv, { code: "x", redirectUri }, { origin: "https://evil.example" });
+  ok(foreign.status === 403 && (await foreign.json()).error === "origin_not_allowed", "cross-origin exchange attempt → 403 origin_not_allowed");
+  ok(tokenPosts().length === preForeign, "the 403 is decided before any upstream call");
+
+  // --- upstream failures (docs/notes/gbc-token-api.md error table) ---
+  const preDead = tokenPosts().length;
+  const dead = await call(Object.assign({}, tokEnv, { GBC_TOKEN_URL: "http://127.0.0.1:9/token" }), { code: "x", redirectUri });
+  ok(dead.status === 502 && (await dead.json()).error === "upstream_unreachable", "unreachable token endpoint → 502 upstream_unreachable");
+  ok(tokenPosts().length === preDead, "the refused exchange reached nothing (no recorded upstream POST)");
+  const badJsonUp = await call(Object.assign({}, tokEnv, { GBC_TOKEN_URL: box.origin + "/token?variant=badjson" }), { code: "x", redirectUri });
+  ok(badJsonUp.status === 502 && (await badJsonUp.json()).error_description === "token response was not JSON",
+     "2xx non-JSON upstream body → 502 upstream_malformed");
+  const noTokUp = await call(Object.assign({}, tokEnv, { GBC_TOKEN_URL: box.origin + "/token?variant=notoken" }), { code: "x", redirectUri });
+  ok(noTokUp.status === 502 && (await noTokUp.json()).error_description === "token response had no access_token",
+     "2xx upstream JSON without access_token → 502 upstream_malformed");
+  const pass = await call(tokEnv, { code: "auth_bogus", redirectUri });
+  ok(pass.status === 400, "upstream 400 keeps its status through the passthrough");
+  ok(await pass.text() === JSON.stringify({ error: "invalid_grant", error_description: "unknown, used, or expired code" }),
+     "upstream error body passes through byte-identical");
+
+  // --- body-style client auth (GBC_TOKEN_AUTH=body) ---
+  const bodyAuth = await call(Object.assign({}, tokEnv, { GBC_TOKEN_AUTH: "body" }), { code: await mintCode(), redirectUri });
+  ok(bodyAuth.status === 200, "body-style client auth exchanges a fresh code");
+  const bodyPost = tokenPosts().pop();
+  const bodyForm = new URLSearchParams(bodyPost.body);
+  ok(bodyForm.get("client_id") === box.clientId && bodyForm.get("client_secret") === box.clientSecret,
+     "body auth style puts client credentials in the form");
+  ok(!bodyPost.headers.authorization, "body auth style sends no authorization header");
+
+  // --- the endpoint logs nothing and retains nothing ---
+  const quietBad = await quiet(() => call(tokEnv, { code: "auth_bogus", redirectUri }));
+  ok(quietBad.out.status === 400 && quietBad.logged.length === 0, "failure path: no console output from the function");
+  const quietGood = await quiet(async () => call(tokEnv, { code: await mintCode(), redirectUri }));
+  ok(quietGood.out.status === 200 && quietGood.logged.length === 0, "success path: no console output from the function");
+  ok(JSON.stringify(Object.keys(worker)) === JSON.stringify(["onRequestPost"]),
+     "module exports only onRequestPost (no cron/queue/other handlers)");
+
+  // Instrumented env: every read is counted, decoy storage bindings would
+  // trip the run — the function must read only GBC_* and touch no store.
+  const reads = new Set();
+  const touched = [];
+  const guardedEnv = {};
+  for (const k of ["GBC_CLIENT_ID", "GBC_CLIENT_SECRET", "GBC_TOKEN_URL"]) {
+    Object.defineProperty(guardedEnv, k, { enumerable: true, get: () => { reads.add(k); return tokEnv[k]; } });
+  }
+  for (const k of ["KV", "D1", "R2", "DB", "STORAGE", "CACHE"]) {
+    Object.defineProperty(guardedEnv, k, { enumerable: true, get: () => { touched.push(k); return undefined; } });
+  }
+  const envKeys = Object.keys(guardedEnv).length;
+  const guarded = await quiet(async () => worker.onRequestPost({
+    request: new Request(box.origin + "/api/gbc/token", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: await mintCode(), redirectUri })
+    }),
+    env: guardedEnv
+  }));
+  ok(guarded.out.status === 200 && guarded.logged.length === 0, "exchange succeeds against an instrumented env, still silent");
+  ok([...reads].length > 0 && [...reads].every((k) => k.startsWith("GBC_")),
+     `env reads were limited to GBC_* bindings (${[...reads].sort().join(", ")})`);
+  ok(touched.length === 0, "no storage binding (KV/D1/R2/…) is ever touched");
+  ok(Object.keys(guardedEnv).length === envKeys && guardedEnv.GBC_CLIENT_ID === box.clientId, "the env object is never written");
 
   console.log("\n9. Data boundary — no usage payload ever reaches the application server");
   // Across the WHOLE run above: one host plays both the app origin and ConEd,
