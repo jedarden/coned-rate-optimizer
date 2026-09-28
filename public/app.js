@@ -37,7 +37,9 @@
       target: offer && offer.targetPlan ? offer.targetPlan.key : null,
       estimate: paid && paid.savings ? paid.savings.estimate : null,
       threshold: paid && paid.threshold ? paid.threshold.value : null,
-      policy: offer ? offer.policyVersion : null
+      policy: offer ? offer.policyVersion : null,
+      eligible: !!(paid && paid.eligible),
+      collectible: !!(paid && paid.collectible)
     });
     if (paymentFingerprint === fingerprint && paymentFlow.state !== "start") return;
     paymentFingerprint = fingerprint;
@@ -399,7 +401,10 @@
       return '<section id="report-checkout" class="checkout-card checkout-complete" aria-labelledby="checkout-title">' +
         '<h2 id="checkout-title">Report unlocked</h2><p>Your ' + offer.name + ' is ready below.</p></section>';
     }
-    if (state === "unavailable") {
+    // Re-check the collection gate at render time as well as when the flow is
+    // synchronized. A stale DOM/state pair must never leave an enabled pay
+    // button after either certification flag or the provider wiring changes.
+    if (!paid.collectible || state === "unavailable") {
       return '<section id="report-checkout" class="checkout-card" aria-labelledby="checkout-title">' +
         '<div class="eyebrow">Checkout</div><h2 id="checkout-title">' + offer.name + ' · ' + price + '</h2>' +
         '<p>' + (flow.reason || paid.reasons[paid.reasons.length - 1] || "Checkout is not available yet.") + '</p>' + content +
@@ -434,32 +439,45 @@
     var target = a.switchTarget;
     var rows = a.comparison.map(function (p) {
       var state = p.current ? "current plan" : p.avail ? "eligible alternative" : "not eligible";
-      var notes = p.eligibilityNotes && p.eligibilityNotes.length
-        ? '<ul class="pnotes">' + p.eligibilityNotes.map(function (n) { return '<li>' + n + '</li>'; }).join("") + '</ul>' : '';
-      return '<tr><td><strong>' + p.name + '</strong><br><span class="tag">' + state + '</span></td>' +
-        '<td class="num">' + usd(p.annualCost) + '/yr</td><td>' + (p.eligibility || "") + notes + '</td></tr>';
+      var notes = (p.eligibilityNotes || []).slice();
+      if (p.excludedReason) notes.unshift("Not eligible: " + p.excludedReason);
+      if (p.lockIn) notes.push("Lock-in: " + p.lockIn + ".");
+      var terms = notes.length
+        ? '<ul class="pnotes">' + notes.map(function (n) { return '<li>' + html(n) + '</li>'; }).join("") + '</ul>' : '';
+      var source = p.source ? ' · <a href="' + html(p.source) + '" target="_blank" rel="noopener">rate source</a>' : '';
+      var estimate = p.estimate ? ' <span class="tag">demand estimate</span>' : '';
+      return '<tr><td><strong>' + html(p.name) + '</strong><br><span class="tag">' + html(state) + '</span>' + estimate + '</td>' +
+        '<td class="num">' + (isFinite(p.annualCost) ? html(usd(p.annualCost) + "/yr") : "not priced") + '</td><td><strong>' + html(p.basis || "") + '</strong> · ' + html(p.eligibility || "") +
+        '<br><span class="legend">' + html(p.ratesAsOf || "rate date unavailable") + '</span>' + source + terms + '</td></tr>';
     }).join("");
     var targetNotes = target && target.eligibilityNotes && target.eligibilityNotes.length
-      ? target.eligibilityNotes.map(function (n) { return '<li>' + n + '</li>'; }).join("") : '';
-    var targetName = target ? target.name : "the recommended plan";
+      ? target.eligibilityNotes.map(function (n) { return '<li>' + html(n) + '</li>'; }).join("") : '';
+    var targetName = target ? html(target.name) : "the recommended plan";
     var monthRows = st && st.dashboard && st.dashboard.rows ? st.dashboard.rows.map(function (r) {
-      return '<tr><td>' + r.ym + '</td><td class="num">' + (r.actual ? usd2(r.actual.total) : '—') + '</td>' +
-        '<td class="num">' + (r.best ? usd2(r.best.total) : '—') + '</td><td class="num">' +
+      var flags = [];
+      if (r.partial) flags.push("partial export");
+      if (r.projected) flags.push("projected rates");
+      var explanation = r.bestKey ? "best: " + planShort(r.bestKey) : "no eligible counterfactual";
+      if (r.rateDriver) explanation += "; rate change: " + (COMPONENT_LABELS[r.rateDriver.component] || r.rateDriver.component);
+      if (flags.length) explanation += " (" + flags.join(", ") + ")";
+      return '<tr><td>' + html(r.ym) + (flags.length ? '<br><span class="tag">' + html(flags.join(" · ")) + '</span>' : '') + '</td>' +
+        '<td class="num">' + (r.actual ? usd2(r.actual.total) : '—') + '</td>' +
+        '<td class="num">' + (r.best ? usd2(r.best.total) : '—') + '</td><td>' + html(explanation) + '</td><td class="num">' +
         (r.difference === null ? '—' : signed(r.difference)) + '</td></tr>';
     }).join("") : '';
     return '<section id="paid-report" class="paid-report" aria-labelledby="paid-report-title">' +
       '<div class="eyebrow">Paid analysis</div><h2 id="paid-report-title">Your complete rate-switch report</h2>' +
-      '<p>Prepared for your declared situation. The recommendation is independent of Con Edison and uses the rate data shown below.</p>' +
+      '<p>Prepared for your declared situation. The recommendation is independent of Con Edison and uses the rate data shown below. Prices are estimates unless the confidence block above says Verified.</p>' +
       '<h3 class="sec">Complete plan comparison</h3>' +
       '<div style="overflow-x:auto"><table id="report-plan-comparison"><thead><tr><th>Rate plan</th><th class="num">Annual cost</th><th>Eligibility and terms</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<h3 class="sec">Switching guidance</h3>' +
       '<ol class="switch-steps"><li>Request <strong>' + targetName + '</strong> through Con Edison, using that exact plan name.</li>' +
-      '<li>Allow the switch to take effect with a future meter read — typically the next bill or the one after (1–2 billing cycles).</li>' +
+      '<li>Allow the switch to take effect with a future meter read — ' + html((R.meta.switchTiming || "typically your next bill or the one after (1–2 billing cycles)").replace(/^A rate switch takes effect with a future meter read\s*[—-]\s*/i, "")) + '.</li>' +
       (targetNotes ? '<li>Before enrolling, review the target plan terms:<ul class="pnotes">' + targetNotes + '</ul></li>' : '') +
       '<li>Keep the first new bill and re-run this analysis after the switch so the projected comparison can be checked against what you actually paid.</li></ol>' +
       '<p class="legend">Optional concierge switching and first-year verification are separate services. The report price does not promise enrollment or guaranteed future savings.</p>' +
       '<h3 class="sec">Month-by-month counterfactual charges</h3>' +
-      '<div style="overflow-x:auto"><table id="report-monthly-comparison"><thead><tr><th>Period</th><th class="num">Actual/current plan</th><th class="num">Best eligible plan</th><th class="num">Difference</th></tr></thead><tbody>' + monthRows + '</tbody></table></div>' +
+      (monthRows ? '<div style="overflow-x:auto"><table id="report-monthly-comparison"><thead><tr><th>Period</th><th class="num">Actual/current plan</th><th class="num">Best eligible plan</th><th>Counterfactual used</th><th class="num">Difference</th></tr></thead><tbody>' + monthRows + '</tbody></table></div>' : '<p class="legend">No measured monthly periods were available for a counterfactual table.</p>') +
       '</section>';
   }
 
@@ -467,6 +485,11 @@
     var pay = $("report-pay");
     if (!pay) return;
     pay.addEventListener("click", function () {
+      if (!a.paid || !a.paid.collectible) {
+        paymentFlow = C.paymentTransition(paymentFlow, "verdict", { paid: a.paid });
+        render(a, lastLabel, { noScroll: true });
+        return;
+      }
       var consent = {
         version: a.paid.offer.policyVersion,
         sawPrice: !!$("consent-price").checked,

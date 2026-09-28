@@ -19,11 +19,20 @@ message.
 
 `public/checkout.js` is the browser adapter for Stripe-hosted Checkout. It
 sends only `{ product: "report", policyVersion }` to
-`/api/checkout/create`; the Pages Function creates a session with a fixed
-`2900`-cent USD line item. Card data is handled by Stripe. On return,
-`/api/checkout/session` verifies the session server-side, including product,
-currency, amount, completion, and payment status, before the browser unlocks
-the report. A success query parameter alone never unlocks anything.
+`/api/checkout/create`; the Pages Function accepts policy version `1` and
+creates a session with a fixed `2900`-cent USD line item. Card data is handled
+by Stripe. On return, `/api/checkout/session` verifies the session server-side,
+including payment mode, product, policy metadata, currency, amount,
+completion, and payment status, before the browser unlocks the report. A
+success query parameter alone never unlocks anything.
+
+The validator rejects any runtime policy whose report price is not exactly $29.
+This keeps the client offer, provider adapter, and server line item from
+silently drifting apart. The report itself is rendered only after a verified
+provider outcome and includes the complete comparison, excluded-plan reasons,
+lock-in terms, counterfactual period rows, and switching instructions. These
+are derived in the browser from the already imported data; no report payload
+is uploaded to the checkout endpoints.
 
 The Pages deployment must provide these out-of-band bindings before enabling
 collection:

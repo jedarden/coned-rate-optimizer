@@ -21,6 +21,7 @@
     var config = options.config || {};
     var createEndpoint = config.createEndpoint || "/api/checkout/create";
     var sessionEndpoint = config.sessionEndpoint || "/api/checkout/session";
+    var policyVersion = 1;
 
     function jsonRequest(url, init) {
       if (typeof fetcher !== "function") return Promise.reject(outcomeError("CHECKOUT_UNAVAILABLE", "checkout is unavailable in this browser"));
@@ -38,7 +39,8 @@
     return {
       id: "stripe-checkout",
       charge: function (request) {
-        if (!request || request.product !== "report" || request.amount !== 29 || request.currency !== "usd") {
+        if (!request || request.product !== "report" || request.amount !== 29 ||
+            request.currency !== "usd" || request.policyVersion !== policyVersion) {
           return Promise.reject(outcomeError("CHECKOUT_INELIGIBLE", "the checkout request is not the certified $29 report"));
         }
         return jsonRequest(createEndpoint, {

@@ -4,6 +4,7 @@
 
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
 const REPORT_CENTS = 2900;
+const REPORT_POLICY_VERSION = 1;
 
 function json(status, body) {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
@@ -40,7 +41,9 @@ export async function onRequestGet({ request, env }) {
   let session;
   try { session = await upstream.json(); }
   catch (e) { return json(502, { code: "provider_malformed", message: "the payment provider returned an invalid response" }); }
-  if (!upstream.ok || !session || !session.metadata || session.metadata.product !== "report" ||
+  if (!upstream.ok || !session || session.mode !== "payment" || !session.metadata ||
+      session.metadata.product !== "report" || session.metadata.amount_cents !== String(REPORT_CENTS) ||
+      session.metadata.policy_version !== String(REPORT_POLICY_VERSION) ||
       session.amount_total !== REPORT_CENTS || session.currency !== "usd") {
     return json(502, { code: "provider_error", message: "the checkout session did not match the certified report" });
   }

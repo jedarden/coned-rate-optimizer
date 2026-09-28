@@ -30,20 +30,24 @@ async function run() {
   const success = await provider.charge({ product: "report", amount: 29, currency: "usd", policyVersion: 1 });
   assert.strictEqual(success.status, "succeeded", "successful provider checkout resolves");
   assert.strictEqual(calls[0].url, "/create", "the adapter uses the configured create endpoint");
+  assert.deepStrictEqual(JSON.parse(calls[0].init.body), { product: "report", policyVersion: 1 },
+    "the browser sends only the fixed product and policy version to checkout");
 
   const cancelled = checkoutProvider({
     fetch: async () => response({ status: "cancelled" }), location: { search: "", assign() {} }
   });
-  await assert.rejects(() => cancelled.charge({ product: "report", amount: 29, currency: "usd" }),
+  await assert.rejects(() => cancelled.charge({ product: "report", amount: 29, currency: "usd", policyVersion: 1 }),
     (e) => e.code === "CHECKOUT_CANCELLED", "cancelled checkout is not treated as paid");
 
   const failed = checkoutProvider({ fetch: async () => response({ code: "provider_error" }, 502) });
-  await assert.rejects(() => failed.charge({ product: "report", amount: 29, currency: "usd" }),
+  await assert.rejects(() => failed.charge({ product: "report", amount: 29, currency: "usd", policyVersion: 1 }),
     (e) => e.code === "CHECKOUT_FAILED", "provider failure remains a failed checkout");
 
   const ineligible = checkoutProvider({ fetch: async () => response({ status: "succeeded" }) });
   await assert.rejects(() => ineligible.charge({ product: "report", amount: 28, currency: "usd" }),
     (e) => e.code === "CHECKOUT_INELIGIBLE", "a non-$29 request is rejected before provider use");
+  await assert.rejects(() => ineligible.charge({ product: "report", amount: 29, currency: "usd", policyVersion: 2 }),
+    (e) => e.code === "CHECKOUT_INELIGIBLE", "a stale pricing policy cannot start checkout");
 
   const resumed = checkoutProvider({
     location: { search: "?checkout=success&session_id=cs_fixture", assign() {} },
@@ -71,13 +75,21 @@ async function run() {
     assert(stripeCall.init.body.includes("line_items%5B0%5D%5Bquantity%5D=1"), "the fixed report quantity is sent");
     assert(stripeCall.init.body.includes("line_items%5B0%5D%5Bprice_data%5D%5Bunit_amount%5D=2900"), "the server sends the fixed $29 report price");
 
-    global.fetch = async () => response({ id: "cs_fixture", mode: "payment", status: "complete", payment_status: "paid", amount_total: 2900, currency: "usd", metadata: { product: "report" } });
+    global.fetch = async () => response({ id: "cs_fixture", mode: "payment", status: "complete", payment_status: "paid", amount_total: 2900, currency: "usd", metadata: { product: "report", amount_cents: "2900", policy_version: "1" } });
     const verified = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
     assert.strictEqual(verified.status, 200, "a paid matching session verifies successfully");
 
-    global.fetch = async () => response({ id: "cs_fixture", mode: "payment", status: "expired", payment_status: "unpaid", amount_total: 2900, currency: "usd", metadata: { product: "report" } });
+    global.fetch = async () => response({ id: "cs_fixture", mode: "payment", status: "expired", payment_status: "unpaid", amount_total: 2900, currency: "usd", metadata: { product: "report", amount_cents: "2900", policy_version: "1" } });
     const expired = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
     assert.strictEqual((await expired.json()).status, "cancelled", "an expired hosted session is cancelled, not paid");
+
+    global.fetch = async () => response({ id: "cs_fixture", mode: "payment", status: "complete", payment_status: "paid", amount_total: 2900, currency: "usd", metadata: { product: "report", amount_cents: "2900", policy_version: "1" } });
+    const matchingSession = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
+    assert.strictEqual(matchingSession.status, 200, "a matching completed session remains verifiable");
+
+    global.fetch = async () => response({ id: "cs_fixture", mode: "subscription", status: "complete", payment_status: "paid", amount_total: 2900, currency: "usd", metadata: { product: "report", amount_cents: "2900", policy_version: "1" } });
+    const wrongMode = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
+    assert.strictEqual(wrongMode.status, 502, "a non-payment Stripe session cannot unlock the report");
   } finally {
     global.fetch = originalFetch;
   }

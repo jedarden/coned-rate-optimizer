@@ -462,6 +462,8 @@ function validate(rates, calcRates, opts) {
     }
     if (!isPlainObject(pricing.report) || !isPos(pricing.report.price)) {
       err("pricing.report.price: required positive $ price for the self-service report");
+    } else if (pricing.report.price !== 29) {
+      err(`pricing.report.price: certified checkout is fixed at $29 (got ${pricing.report.price})`);
     }
     if (!isPos(pricing.threshold)) {
       err("pricing.threshold: required positive $ amount (first-year savings must clear it, at the low end " +

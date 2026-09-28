@@ -715,12 +715,18 @@
 
   function providerConfigured(P) {
     var p = P && P.provider;
-    return typeof p === "string" ? !!p : !!(p && typeof p.id === "string" && p.id);
+    // The server and browser adapter below are specifically the Stripe-hosted
+    // Checkout integration. Treating an arbitrary descriptor as wired would
+    // allow a certification flag for one provider to arm a different adapter.
+    return !!(p && typeof p === "object" && p.id === "stripe-checkout" &&
+      (!p.createEndpoint || typeof p.createEndpoint === "string") &&
+      (!p.sessionEndpoint || typeof p.sessionEndpoint === "string"));
   }
 
   function providerCertified(P) {
-    var p = P && P.provider;
-    return !!(P && (P.providerCertified === true || (p && typeof p === "object" && p.certified === true)));
+    // Certification is an explicit deployment decision. It cannot be supplied
+    // by a client-visible provider descriptor or inferred from its presence.
+    return !!(P && P.providerCertified === true);
   }
 
   // The annual-savings RANGE the free verdict shows ("the estimated annual opportunity,
@@ -759,6 +765,8 @@
     var band = target && target.demand ? (P.demandBandPct || 0.10) : (P.savingsBandPct || 0.05);
     var savings = a.savings || savingsRange(curCost * factor, altCost * factor, band);
     var threshold = P.threshold;
+    var reportPrice = P.report && P.report.price;
+    var fixedReportPrice = reportPrice === 29;
     var thresholdCleared = isFinite(threshold) && savings.low > threshold;
     var hasSaving = !!target && savings.estimate > 0;
     var confidenceLevel = a.confidence && a.confidence.level;
@@ -772,9 +780,11 @@
         "), under the " + usd0(threshold) + "/yr meaningful-savings bar for the report — the free comparison already covers you.");
     } else if (confidenceLevel === "low") {
       reasons.push("the model disagrees with your actual bills — a charge is never taken against that evidence.");
+    } else if (!fixedReportPrice) {
+      reasons.push("the report price is not the certified $29 product, so checkout remains closed until the pricing policy and provider agree.");
     }
 
-    var eligible = !blockers.length && hasSaving && thresholdCleared && confidenceLevel !== "low";
+    var eligible = !blockers.length && hasSaving && thresholdCleared && confidenceLevel !== "low" && fixedReportPrice;
     var collectible = false;
     if (eligible) {
       if (P.chargingCertified !== true) {
@@ -792,7 +802,7 @@
       offer = {
         product: "report",
         name: (P.report && P.report.name) || "Self-service report",
-        price: P.report && P.report.price,
+        price: 29,
         currency: P.currency || "usd",
         policyVersion: P.policyVersion,
         savings: savings, threshold: threshold,

@@ -1389,6 +1389,11 @@ try {
   assert(under.reasons[0].includes("under the $150/yr") && under.reasons[0].includes("range"),
     `the under-threshold reason quotes the estimate, its range, and the bar ("${under.reasons[0].slice(0, 52)}…")`);
 
+  const exactFloor = mkA({ switchTarget: { key: "tou", name: "Time-of-Use", cost: 1666.6666666666667 } });
+  const exact = calc.paidConversion(exactFloor);
+  assert(exact.savings.low <= P.threshold && exact.eligible === false && exact.offer === null,
+    "a savings floor exactly at $150 is not offered (the policy is strictly greater than the threshold)");
+
   const blocked = calc.paidConversion(mkA({ eligibility: { blockers: ["no smart meter"], notes: [] } }));
   assert(blocked.eligible === false && blocked.noSavings === null,
     "a blocked analysis offers nothing — and is not claimed as a no-savings result");
@@ -1427,8 +1432,12 @@ try {
       "certified but provider-less still cannot collect");
     P.provider = { id: "test-provider" };
     const uncertified = calc.paidConversion(clear);
-    assert(uncertified.collectible === false && uncertified.reasons[0].includes("not certified"),
-      "a wired but uncertified provider still cannot collect");
+    assert(uncertified.collectible === false && uncertified.reasons[0].includes("no payment provider"),
+      "an unrecognized provider cannot be armed by a certification flag");
+    P.provider = { id: "stripe-checkout" };
+    const stripeUncertified = calc.paidConversion(clear);
+    assert(stripeUncertified.collectible === false && stripeUncertified.reasons[0].includes("not certified"),
+      "a wired but uncertified Stripe provider still cannot collect");
     P.providerCertified = true;
     const armed = calc.paidConversion(clear);
     assert(armed.collectible === true && armed.reasons.length === 0,
