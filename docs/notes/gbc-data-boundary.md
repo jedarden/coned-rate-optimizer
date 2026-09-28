@@ -144,7 +144,18 @@ ConEd's real sandbox is registration-gated, so the verification stands up the
 - `tools/verify-gbc-browser.js` — the same sandbox plus a static server, then
   a real Chromium run: click Connect → authorize on the mock → redirect back →
   feeds pulled → verdict rendered → token present in `sessionStorage` →
-  Disconnect clears it.
+  Disconnect clears it. Beyond the happy path it drives the refused callback
+  shapes live (no stored state, tampered state, OAuth `error=`, and a
+  well-signed state with a bogus code — only that last one may reach the
+  exchange, and the upstream refusal passes through the real function), the
+  token's sessionStorage lifetime (`expires_in` → `expiresAt`, a revisit
+  restored locally without re-pulling a feed, expired and inside-the-30s-
+  margin tokens dropped on load and never sent to ConEd), and — logged
+  across the whole run — the boundary itself at browser level: every POST the
+  app server received was the exchange and every body was exactly
+  `{code, redirectUri}`, no usage byte and never the access token reached it,
+  and every feed request was a browser-direct GET to the Data Custodian
+  riding the bearer token.
 - `test/test.js` Test 17 — the pure core's unit behavior (config degrade,
   authorize-URL shape, CSRF/state validation, connection store, feed-walk
   helpers).

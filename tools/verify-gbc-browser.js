@@ -23,6 +23,23 @@
         stored monitoring history (deletion is a separate, explicit act)
      6. reload restores the retained history; "Delete stored data" removes
         it from localStorage permanently and the page forgets
+     7. OAuth callback validation, live in the page: a callback with no
+        stored state or a tampered state is refused and its code is never
+        exchanged; a valid state with a bogus code is the one refused shape
+        allowed to reach the token endpoint, and the upstream refusal passes
+        through the real function while storing no connection; an OAuth
+        error callback renders its friendly copy
+     8. sessionStorage token lifetime: expires_in becomes expiresAt, a
+        revisit restores the still-fresh connection locally without
+        re-pulling a single feed, an expired token is dropped on load and
+        never touches ConEd, and a token inside the 30s freshness margin is
+        not restored either
+     9. whole-run boundary accounting (docs/notes/gbc-data-boundary.md,
+        re-proven at browser level): every POST the app server received was
+        the token exchange and every body was exactly {code, redirectUri};
+        no usage byte and never the access token reached the app server; the
+        interval and billing feeds were fetched directly by the browser from
+        the Data Custodian, each GET riding the bearer token
 
    Not part of scripts/definition-of-done.sh (needs a browser); the Node-only
    authorization harness it mirrors runs there as node test/gbc-sandbox.js. */
@@ -57,8 +74,12 @@ const TYPES = {
 /** Serves public/ statically. /gbc-config.json and /api/gbc/token are
  *  intercepted: the config follows `mode` ("unconfigured" = the shipped
  *  public/gbc-config.json, "configured" = the sandbox config), and the token
- *  route always delegates to the real Pages Function. */
+ *  route always delegates to the real Pages Function. Every request the app
+ *  server receives is recorded — method, path, query, body, headers, and the
+ *  response status — into the returned `requests` log; the section 9
+ *  boundary accounting reads it. */
 function startStatic(box) {
+  const requests = [];
   const server = http.createServer((req, res) => {
     handler(req, res).catch((e) => {
       res.writeHead(500, { "content-type": "text/plain" });
@@ -67,6 +88,19 @@ function startStatic(box) {
   });
   async function handler(req, res) {
     const u = new URL(req.url, "http://x");
+    const chunks = [];
+    if (req.method === "POST") for await (const c of req) chunks.push(c);
+    const rec = {
+      method: req.method,
+      path: u.pathname,
+      query: u.search,
+      body: Buffer.concat(chunks).toString("utf8"),
+      headers: Object.assign({}, req.headers),
+      status: 0
+    };
+    const writeHead = res.writeHead.bind(res);
+    res.writeHead = function (code) { rec.status = code; return writeHead.apply(res, arguments); };
+    requests.push(rec);
     if (u.pathname === "/gbc-config.json") {
       if (box.staticMode === "configured") {
         res.writeHead(200, { "content-type": "application/json" });
@@ -82,13 +116,11 @@ function startStatic(box) {
       return serveFile(res, "gbc-config.json");
     }
     if (u.pathname === "/api/gbc/token" && req.method === "POST") {
-      const chunks = [];
-      for await (const c of req) chunks.push(c);
       const response = await worker.onRequestPost({
         request: new Request("http://x/api/gbc/token", {
           method: "POST",
           headers: { "content-type": "application/json", "origin": "http://x" },
-          body: Buffer.concat(chunks).toString("utf8")
+          body: rec.body
         }),
         env: { GBC_CLIENT_ID: box.clientId, GBC_CLIENT_SECRET: box.clientSecret, GBC_TOKEN_URL: box.origin + "/token" }
       });
@@ -111,7 +143,12 @@ function startStatic(box) {
   }
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
-      resolve({ server, origin: "http://127.0.0.1:" + server.address().port, stop: () => new Promise((d) => server.close(d)) });
+      resolve({
+        server,
+        origin: "http://127.0.0.1:" + server.address().port,
+        requests,
+        stop: () => new Promise((d) => server.close(d))
+      });
     });
   });
 }
@@ -236,6 +273,132 @@ const ok = (cond, msg) => {
     await page.waitForFunction(() => document.getElementById("gbc-panel") !== null);
     ok(await page.evaluate(() => document.getElementById("results").hidden),
       "after deletion a revisit starts clean — nothing restores");
+    console.log("\n7. OAuth callback validation, live in the page");
+    // Disconnect (5) and the Delete (6) left no token and no CSRF state; start
+    // from a proven-clean slate and walk the four callback shapes the page can
+    // meet on a redirect back from ConEd.
+    await page.evaluate(() => sessionStorage.clear());
+    const exchangePosts = () => site.requests.filter((r) => r.method === "POST" && r.path === "/api/gbc/token");
+    const postsBefore = exchangePosts().length; // section 2's successful connect
+    const storedConn = () => page.evaluate(() => sessionStorage.getItem("gbc-connection"));
+
+    await page.goto(site.origin + "/?code=auth_eavesdropped&state=eavesdropped", { waitUntil: "load" });
+    await page.waitForFunction(() => document.getElementById("gbc-status").textContent.length > 0);
+    ok(/state mismatch/.test(await page.textContent("#gbc-status")),
+      "a callback the page never requested (no stored state) is refused as CSRF");
+    ok(!/[?&](code|state)=/.test(page.url()), "the refused callback is consumed from the address bar");
+    ok(await storedConn() === null, "an unrequested reply stores no connection");
+
+    await page.evaluate(() => sessionStorage.setItem("gbc-state", "expectedstate"));
+    await page.goto(site.origin + "/?code=auth_eavesdropped&state=tampered", { waitUntil: "load" });
+    await page.waitForFunction(() => /state mismatch/.test(document.getElementById("gbc-status").textContent));
+    ok(await storedConn() === null, "a tampered state is refused the same way — still no connection");
+    ok(exchangePosts().length === postsBefore, "neither refused state ever reached the token endpoint");
+
+    // The one refused shape allowed as far as the exchange: a well-signed
+    // state carrying a code that was never issued. The real Pages Function
+    // takes it upstream and passes ConEd's refusal back.
+    await page.goto(site.origin + "/?code=auth_bogus&state=expectedstate", { waitUntil: "load" });
+    await page.waitForFunction(() => /unknown, used, or expired code/.test(document.getElementById("gbc-status").textContent), null, { timeout: 10000 });
+    ok(exchangePosts().length === postsBefore + 1, "exactly one exchange was attempted across all four callback shapes");
+    const tried = exchangePosts()[exchangePosts().length - 1];
+    ok(tried.body === JSON.stringify({ code: "auth_bogus", redirectUri: site.origin + "/" }),
+      "the attempt carried exactly {code, redirectUri} — the registered redirect, nothing else about the page");
+    ok(tried.status === 400, "the upstream refusal passed through the real function (HTTP 400)");
+    ok(await storedConn() === null && await page.isVisible("#gbc-connect"),
+      "a refused exchange stores no connection and leaves the panel connectable");
+
+    await page.goto(site.origin + "/?error=access_denied&error_description=nope", { waitUntil: "load" });
+    await page.waitForFunction(() => /declined the ConEd authorization/.test(document.getElementById("gbc-status").textContent));
+    ok(exchangePosts().length === postsBefore + 1, "an OAuth error callback never touches the token endpoint either");
+
+    console.log("\n8. sessionStorage token lifetime");
+    await page.click("#gbc-connect");
+    await page.waitForFunction(
+      () => /Connected · subscription 77/.test(document.getElementById("gbc-status").textContent),
+      null, { timeout: 15000 }
+    );
+    ok(/authorization expires in ~60 min · it lives only in this tab/.test(await page.textContent("#gbc-status")),
+      "the panel names the token's lifetime and where it lives");
+    const conn8 = await page.evaluate(() => JSON.parse(sessionStorage.getItem("gbc-connection")));
+    ok(Math.abs(conn8.expiresAt - Date.now() - 3600e3) < 10000 && conn8.obtainedAt > 0,
+      "expiresAt was computed from the response's expires_in (" + Math.round((conn8.expiresAt - Date.now()) / 1000) + "s out)");
+    ok(/Stay on Standard/.test(await page.textContent("#results")),
+      "the pulled feeds were parsed and analyzed in-page — the verdict renders from the connection");
+    // Where the token lives, exactly: one carrier in web storage.
+    const where = await page.evaluate((tok) => ({
+      localStorage: Object.keys(localStorage).map((k) => k + "=" + localStorage.getItem(k)).join("|"),
+      otherSession: Object.keys(sessionStorage).filter((k) => k !== "gbc-connection")
+        .map((k) => k + "=" + sessionStorage.getItem(k)).join("|")
+    }), box.accessToken);
+    ok(!where.localStorage.includes(box.accessToken) && !where.otherSession.includes(box.accessToken),
+      "no localStorage entry and no other sessionStorage key carries the token");
+
+    const espiCount = () => box.requests.filter((r) => r.url.split("?")[0].startsWith("/espi/")).length;
+    const beforeReload = espiCount();
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(
+      () => /Connected · subscription 77/.test(document.getElementById("gbc-status").textContent),
+      null, { timeout: 10000 }
+    );
+    ok(await page.isVisible("#gbc-disconnect"), "the connected controls are back after the reload");
+    ok(espiCount() === beforeReload, "a revisit restores the still-fresh connection locally — not one feed re-pulled");
+
+    await page.evaluate(() => {
+      const c = JSON.parse(sessionStorage.getItem("gbc-connection"));
+      c.expiresAt = Date.now() - 1000;
+      sessionStorage.setItem("gbc-connection", JSON.stringify(c));
+    });
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => sessionStorage.getItem("gbc-connection") === null);
+    ok(await page.isVisible("#gbc-connect"), "an expired token is dropped on load, and the panel resets to connect");
+    ok(espiCount() === beforeReload, "the dead token never touched ConEd on that load");
+
+    await page.evaluate((tok) => sessionStorage.setItem("gbc-connection", JSON.stringify({
+      accessToken: tok, tokenType: "Bearer", scope: "", expiresIn: 3600,
+      obtainedAt: Date.now(), expiresAt: Date.now() + 15000
+    })), box.accessToken);
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => sessionStorage.getItem("gbc-connection") === null);
+    ok(true, "a token inside the 30s freshness margin is not restored either");
+
+    console.log("\n9. Boundary accounting — everything the app server saw, whole run");
+    const siteReqs = site.requests;
+    const sitePosts = siteReqs.filter((r) => r.method === "POST");
+    ok(sitePosts.length === 3 && sitePosts.every((r) => r.path === "/api/gbc/token"),
+      `every POST the app server received was a token exchange (${sitePosts.length} across the whole run)`);
+    ok(JSON.stringify(sitePosts.map((r) => r.status)) === JSON.stringify([200, 400, 200]),
+      "exchange outcomes in order: connect, the refused bogus code, reconnect (" + sitePosts.map((r) => r.status).join(", ") + ")");
+    const bodyShape = (r) => {
+      try {
+        const j = JSON.parse(r.body);
+        return Object.keys(j).length === 2 && typeof j.code === "string" && typeof j.redirectUri === "string";
+      } catch (e) { return false; }
+    };
+    ok(sitePosts.length > 0 && sitePosts.every(bodyShape),
+      "only the authorization code reached the token endpoint — every body was exactly {code, redirectUri}");
+    const usageMarkers = ["IntervalReading", "IntervalBlock", "UsageSummary", "powerOfTenMultiplier"];
+    const carried = (r, s) => (r.body + " " + r.path + " " + r.query + " " + (r.headers.authorization || "")).includes(s);
+    ok(siteReqs.length > 0 && siteReqs.every((r) => usageMarkers.every((m) => !carried(r, m))),
+      `no interval or billing byte ever reached the app server (${siteReqs.length} requests logged)`);
+    ok(siteReqs.every((r) => !carried(r, box.accessToken)), "the access token never reached the app server");
+    ok(siteReqs.every((r) => !r.path.startsWith("/espi/")),
+      "the app server never saw a feed request — nothing to relay, nothing to retain");
+
+    const espi = box.requests.filter((r) => r.url.split("?")[0].startsWith("/espi/"));
+    ok(espi.length > 0 && espi.every((r) => /Chrome/.test(r.headers["user-agent"] || "")),
+      `every Data Custodian request came from the browser (${espi.length}, CORS preflights included)`);
+    const espiGets = espi.filter((r) => r.method === "GET");
+    ok(espiGets.length > 0 && espiGets.every((r) => r.headers.authorization === "Bearer " + box.accessToken),
+      "every feed GET rode the bearer token, browser → ConEd directly");
+    const fetched = new Set(espiGets.map((r) => r.url.split("?")[0]));
+    ["/espi/1_1/resource/Subscription",
+     `/espi/1_1/resource/Subscription/${conn8.subscriptionId}/UsagePoint`,
+     `/espi/1_1/resource/Batch/UsagePoint/${conn8.usagePointId}`,
+     `/espi/1_1/resource/UsagePoint/${conn8.usagePointId}/UsageSummary`
+    ].forEach((p) => ok(fetched.has(p),
+      "the browser fetched " + p.replace("/espi/1_1/resource/", "") + " directly"));
+
     ok(pageErrors.length === 0, "no page errors across the whole run" + (pageErrors.length ? ` — ${pageErrors.join(" | ")}` : ""));
   } catch (e) {
     ok(false, `E2E crashed: ${e.message.split("\n")[0]}`);

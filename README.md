@@ -100,7 +100,9 @@ tools/
   verify-agentation-mount.js <- browser check: toolbar mounts on ?feedback=1,
                                 nothing extra loads without it (needs playwright)
   verify-gbc-browser.js      <- browser E2E: real Chromium through the full GBC
-                                authorization + import flow (needs playwright)
+                                authorization + import flow, refused-callback
+                                shapes, token lifetime, and the app-server
+                                boundary checks (needs playwright)
 test/              <- automated test suite and fixtures
   test.js          <- automated tests for calc.js core (+ GBC core, Test 17;
                       persistent monitoring, Test 21)

@@ -32,6 +32,17 @@ node test/gbc-sandbox.js
 # port); the real Pages Function handles /api/gbc/token. Exits 0 on success.
 ```
 
+### Run the Green Button Connect browser end-to-end (needs Playwright + Chromium)
+```bash
+NODE_PATH=<dir containing playwright> CHROME_PATH=<chromium binary> node tools/verify-gbc-browser.js
+# A real Chromium drives the shipped page against the sandbox: the connected
+# happy path, the refused callback shapes (no/tampered state, OAuth error,
+# bogus code), the sessionStorage token lifetime (restore while fresh,
+# expired and inside-margin drops), and the whole-run boundary accounting
+# (only {code, redirectUri} ever reaches the app server; feeds are fetched
+# browser-direct). Not part of definition-of-done.sh — it needs a browser.
+```
+
 ### Run verification with your own data
 ```bash
 node verify.js /path/to/your/green-button-export.csv
