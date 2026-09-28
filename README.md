@@ -110,6 +110,8 @@ verify.js          <- Node verification script
 scripts/
   validate-rates.js         <- tariff data gate (docs/tariff-update-workflow.md)
   definition-of-done.sh     <- gate + test suite + sandbox + verify: run before every push
+  provision-gbc-bindings.sh <- out-of-band Pages binding provisioning; values stay on stdin
+  smoke-gbc-production.js   <- live production binding/upstream-auth smoke check; logs no bodies
 tools/
   verify-agentation-mount.js <- browser check: toolbar mounts on ?feedback=1,
                                 nothing extra loads without it (needs playwright)

@@ -66,6 +66,83 @@ CLOUDFLARE_API_TOKEN=<from OpenBao rs-manager/iad-ci/cloudflare/pages → CF_API
   wrangler pages deploy public --project-name=coned --branch=main
 ```
 
+## Step 3 — provision the GBC Pages bindings out of band
+
+Do this only after Con Edison has issued the third-party application
+credentials and exact token endpoint. The browser remains disabled while
+`public/gbc-config.json` says `configured: false`; provisioning these bindings
+does not put a secret in the repository or enable the UI by itself.
+
+The Pages Function reads these bindings:
+
+| Binding | Required | Value |
+|---|---:|---|
+| `GBC_CLIENT_ID` | yes | Con Edison's registered third-party client id |
+| `GBC_CLIENT_SECRET` | yes | The client secret, never a browser/public config value |
+| `GBC_TOKEN_URL` | yes | The exact HTTPS token endpoint issued during onboarding |
+| `GBC_TOKEN_AUTH` | no | `basic` (default) or `body`, exactly as required by Con Edison |
+
+Retrieve the onboarding values from the approved secret-management record into
+the current shell environment. Do not put them in command arguments, a file,
+`.env`, `wrangler.toml`, shell output, or a commit. The Cloudflare API token
+used by Wrangler must likewise come from the existing OpenBao-backed Pages
+credential path. The command below pipes each value to Wrangler's stdin and
+suppresses Wrangler output:
+
+```bash
+# Populate these names from the approved secret manager; do not use inline
+# `NAME=value command` assignments, which put values in shell history/process
+# listings. GBC_TOKEN_AUTH may be omitted and defaults to basic.
+export GBC_CLIENT_ID GBC_CLIENT_SECRET GBC_TOKEN_URL GBC_TOKEN_AUTH
+PAGES_PROJECT=coned ./scripts/provision-gbc-bindings.sh
+unset GBC_CLIENT_ID GBC_CLIENT_SECRET GBC_TOKEN_URL GBC_TOKEN_AUTH
+```
+
+The script rejects a non-HTTPS token URL and any auth mode other than `basic`
+or `body`. It stores all four values as Pages secret bindings so there is one
+out-of-band path and no onboarding value is added to `wrangler.toml` or the
+repository. It is safe to rerun for rotation; rerun the smoke check after all
+four updates have completed. If the secret put fails, the script reports only
+the binding name and intentionally withholds CLI diagnostics.
+
+If onboarding requires body authentication, set `GBC_TOKEN_AUTH=body` before
+running the script. Otherwise leave it unset (the script provisions the
+explicit `basic` default, preventing a stale prior mode from surviving a
+rotation).
+
+## Step 4 — verify production without a credential
+
+Run the smoke check against the deployed Pages Function after provisioning:
+
+```bash
+node scripts/smoke-gbc-production.js
+# Optional non-default endpoint:
+GBC_SMOKE_URL=https://coned.jedarden.com/api/gbc/token \
+  node scripts/smoke-gbc-production.js
+```
+
+The check makes two safe requests and never sends a client credential or logs
+either response body:
+
+1. A malformed body must receive `400 invalid_request`. A `503
+   gbc_not_configured` result means at least one required binding is missing.
+2. A newly generated, synthetic authorization code must receive Con Edison's
+   normal `400 invalid_grant`. A `400`, `401`, or `403 invalid_client` result
+   means the configured client authentication was rejected and the bindings
+   must be checked or rotated. Network failures, `502 upstream_unreachable`,
+   malformed success responses, and every other status fail the check.
+
+The synthetic code is never a customer grant and cannot retrieve usage. The
+smoke check is therefore suitable for production and can be rerun after a
+secret rotation. It does not replace the browser E2E sandbox or the normal
+deploy gate.
+
+To revoke access, revoke the third-party app in Con Edison's developer/account
+controls, then remove the Pages bindings through the Cloudflare dashboard or
+the equivalent `wrangler pages secret delete` commands. Do not record deleted
+values in a ticket or log. Re-enabling requires a fresh onboarding credential,
+the four-binding provisioning step, and a passing smoke check.
+
 ## Notes / caveats
 
 - The Cloudflare Terraform is applied **manually** (standalone state), not by ArgoCD — ArgoCD only syncs `k8s/`. So Step 1's `terraform apply` is a manual run wherever the token + network + tfstate live.

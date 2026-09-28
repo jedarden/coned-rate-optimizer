@@ -6,8 +6,10 @@
 # no-payload regression checks — see docs/notes/analytics-privacy.md), the
 # Green Button Connect sandbox Third-Party App authorization (mock OAuth +
 # ESPI Data Custodian driving the real gbc.js and Pages Function), and the
-# verify script (which applies rates.json on top of the calc.js defaults and
-# cross-checks for rate drift).
+# production-binding smoke-check contract (with fake responses, so no live
+# credential or endpoint is needed), the provisioning script's shell syntax,
+# and the verify script (which applies rates.json on top of the calc.js
+# defaults and cross-checks for rate drift).
 #
 # Flags such as --fast are accepted and ignored: the suite runs in well under
 # a second, so there is no faster variant to select.
@@ -18,4 +20,6 @@ node scripts/validate-rates.js
 node test/test.js
 node test/analytics-privacy.js
 node test/gbc-sandbox.js
+bash -n scripts/provision-gbc-bindings.sh
+node test/gbc-production-smoke.js
 node verify.js
