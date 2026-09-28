@@ -1094,6 +1094,7 @@
     p.eligibility = r.eligibility || null;
     p.formerly = r.formerly || null;
     p.ratesAsOf = r.ratesAsOf || RATES.meta.asOf;
+    p.source = r.source || null;
     p.lockIn = (r.lockIn && r.lockIn.note) || null;
     return p;
   }
@@ -1241,7 +1242,7 @@
     // Ranked plan-by-plan comparison: viable plans cheapest-first, excluded ones after (still
     // visible, with the reason), deltas vs the current Standard plan.
     var comparison = plans.map(function (p) {
-      return { key: p.key, name: p.name, short: p.short, basis: p.basis, eligibility: p.eligibility, formerly: p.formerly,
+      return { key: p.key, name: p.name, short: p.short, basis: p.basis, eligibility: p.eligibility, source: p.source, formerly: p.formerly,
         current: !!p.current, estimate: !!p.demand, cost: p.cost, annualCost: p.cost * factor,
         deltaAnnual: (p.cost - std) * factor, ratesAsOf: p.ratesAsOf,
         avail: p.avail !== false, excludedReason: p.excludedReason || null,

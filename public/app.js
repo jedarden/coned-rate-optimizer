@@ -10,6 +10,7 @@
   var drop = $("drop"), file = $("file"), err = $("error"), results = $("results");
   var evToggle = $("ev-toggle"), lastParsed = null, lastLabel = "", lastBills = [], lastBillingNote = null;
   var series = null, monitorNote = null; // the retained monitoring series; save failures surface once, where the numbers are
+  var paymentFlow = C.newPaymentFlow(), paymentFingerprint = null;
 
   var usd = function (n) { return (n < 0 ? "−" : "") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US"); };
   var usd2 = function (n) { return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
@@ -17,6 +18,34 @@
     var r = Math.round(n);
     return (r === 0 ? "" : n >= 0 ? "+" : "−") + "$" + Math.abs(r).toLocaleString("en-US");
   };
+  var money = function (n) {
+    return (n < 0 ? "−$" : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  function resetPaymentFlow() {
+    paymentFlow = C.newPaymentFlow();
+    paymentFingerprint = null;
+  }
+
+  function syncPaymentFlow(paid) {
+    var offer = paid && paid.offer;
+    var fingerprint = JSON.stringify({
+      target: offer && offer.targetPlan ? offer.targetPlan.key : null,
+      estimate: paid && paid.savings ? paid.savings.estimate : null,
+      threshold: paid && paid.threshold ? paid.threshold.value : null,
+      policy: offer ? offer.policyVersion : null
+    });
+    if (paymentFingerprint === fingerprint && paymentFlow.state !== "start") return;
+    paymentFingerprint = fingerprint;
+    paymentFlow = C.paymentTransition(C.newPaymentFlow(), "verdict", { paid: paid });
+    // The pure eligibility gate treats any non-null provider configuration as
+    // wired. The browser additionally requires the adapter's charge method so
+    // a malformed deployment cannot expose a pay button that cannot complete.
+    if (paymentFlow.state === "offered" && !checkoutProvider()) {
+      paymentFlow.state = "unavailable";
+      paymentFlow.reason = "no browser checkout adapter is wired into this deployment.";
+    }
+  }
 
   function showError(msg) {
     err.textContent = "Couldn't read that file: " + msg;
@@ -294,11 +323,174 @@
     }, "image/png");
   }
 
+  // The first result is deliberately useful without a purchase. It shows the
+  // conservative opportunity range and the reason the report is, or is not,
+  // available; the detailed report is rendered only after a completed payment.
+  function freePreview(a, paid, curEntry, period) {
+    var s = paid && paid.savings ? paid.savings : { estimate: 0, low: 0, high: 0 };
+    var target = a.switchTarget;
+    var title, copy, opportunity;
+    if (paid && paid.noSavings) {
+      title = "Your free result is complete";
+      opportunity = "No meaningful savings found";
+      copy = paid.noSavings.message;
+    } else if (target && s.estimate > 0) {
+      title = "Free savings preview";
+      opportunity = money(s.low) + "–" + money(s.high) + "/yr";
+      copy = "The comparison estimates that switching from " + curEntry.name + " to " + target.name +
+        " could save " + money(s.estimate) + "/yr " + period + ".";
+    } else {
+      title = "Free savings preview";
+      opportunity = "No meaningful savings found";
+      copy = "The free comparison found no eligible switch that lowers this bill.";
+    }
+    var qualification = paid && paid.offer
+      ? (paid.collectible
+        ? "Your result clears the $" + paid.threshold.value + "/yr meaningful-savings bar."
+        : "Your result clears the $" + paid.threshold.value + "/yr meaningful-savings bar, but checkout is not live in this deployment yet.")
+      : (paid && paid.reasons && paid.reasons.length && !paid.noSavings ? paid.reasons[0] : "");
+    return '<section id="free-preview" class="preview-card" aria-labelledby="free-preview-title">' +
+      '<div class="eyebrow">Free result</div><h2 id="free-preview-title">' + title + '</h2>' +
+      '<div class="preview-opportunity">' + opportunity + '</div>' +
+      '<p>' + copy + '</p>' +
+      (qualification ? '<p class="legend preview-reason">' + qualification + '</p>' : '') +
+      (paid && paid.noSavings ? '<p class="legend"><strong>No charge.</strong> ' + paid.noSavings.annualRecheck + '</p>' : '') +
+      '</section>';
+  }
+
+  function checkoutProvider() {
+    var configured = C.RATES.pricing && C.RATES.pricing.provider;
+    if (configured && typeof configured.charge === "function") return configured;
+    if (window.ConedCheckout && typeof window.ConedCheckout.charge === "function") return window.ConedCheckout;
+    return null;
+  }
+
+  function checkoutSection(paid, flow) {
+    if (!paid || !paid.offer) {
+      var noCharge = paid && paid.noSavings
+        ? "No report is offered because this is the no-savings result — it stays free."
+        : "No charge is due: the report is offered only after the conservative savings threshold and confidence checks pass.";
+      return '<section id="report-checkout" class="checkout-card checkout-muted" aria-labelledby="checkout-title">' +
+        '<h2 id="checkout-title">Paid report</h2><p>' + noCharge + '</p></section>';
+    }
+    var offer = paid.offer, price = money(offer.price || 0), state = flow && flow.state;
+    var content = '<ul class="checkout-includes">' + offer.includes.map(function (item) { return '<li>' + item + '</li>'; }).join("") + '</ul>';
+    if (state === "paid" || state === "refunded") {
+      return '<section id="report-checkout" class="checkout-card checkout-complete" aria-labelledby="checkout-title">' +
+        '<h2 id="checkout-title">Report unlocked</h2><p>Your ' + offer.name + ' is ready below.</p></section>';
+    }
+    if (state === "unavailable") {
+      return '<section id="report-checkout" class="checkout-card" aria-labelledby="checkout-title">' +
+        '<div class="eyebrow">Checkout</div><h2 id="checkout-title">' + offer.name + ' · ' + price + '</h2>' +
+        '<p>' + (paid.reasons[paid.reasons.length - 1] || "Checkout is not available yet.") + '</p>' + content +
+        '<p class="legend">You will not be charged while the accuracy gate and payment provider are not both active. The free result above remains yours.</p></section>';
+    }
+    if (state === "abandoned") {
+      return '<section id="report-checkout" class="checkout-card checkout-muted" aria-labelledby="checkout-title">' +
+        '<h2 id="checkout-title">Checkout closed for this result</h2><p>' + (flow.reason || "Payment attempts were exhausted.") + '</p></section>';
+    }
+    var busy = state === "charging";
+    var failed = state === "failed";
+    return '<section id="report-checkout" class="checkout-card" aria-labelledby="checkout-title">' +
+      '<div class="eyebrow">Checkout</div><h2 id="checkout-title">' + offer.name + ' · ' + price + '</h2>' +
+      '<p>Pay once for the full analysis. This is an independent service, not Con Edison. The savings are a projection, not a guarantee.</p>' +
+      content +
+      '<div class="consent-list">' +
+        '<label><input type="checkbox" id="consent-price" /> I saw the ' + price + ' price.</label>' +
+        '<label><input type="checkbox" id="consent-contents" /> I saw what the report contains.</label>' +
+        '<label><input type="checkbox" id="consent-affiliation" /> I understand this service is independent, not Con Edison.</label>' +
+        '<label><input type="checkbox" id="consent-estimate" /> I understand savings are projected, not guaranteed.</label>' +
+        '<label><input type="checkbox" id="consent-charge" /> I authorize the ' + price + ' charge.</label>' +
+      '</div>' +
+      (failed ? '<p class="checkout-error" role="alert">' + (flow.reason || "Payment failed.") + '</p>' : '') +
+      '<button id="report-pay" class="btn" type="button"' + (busy ? ' disabled' : '') + '>' +
+        (busy ? 'Processing payment…' : failed ? 'Retry payment' : 'Pay ' + price + ' and unlock report') + '</button>' +
+      '<p id="checkout-status" class="legend" role="status"></p></section>';
+  }
+
+  function paidReportSection(a, st) {
+    if (paymentFlow.state !== "paid" && paymentFlow.state !== "refunded") return "";
+    var target = a.switchTarget;
+    var rows = a.comparison.map(function (p) {
+      var state = p.current ? "current plan" : p.avail ? "eligible alternative" : "not eligible";
+      var notes = p.eligibilityNotes && p.eligibilityNotes.length
+        ? '<ul class="pnotes">' + p.eligibilityNotes.map(function (n) { return '<li>' + n + '</li>'; }).join("") + '</ul>' : '';
+      return '<tr><td><strong>' + p.name + '</strong><br><span class="tag">' + state + '</span></td>' +
+        '<td class="num">' + usd(p.annualCost) + '/yr</td><td>' + (p.eligibility || "") + notes + '</td></tr>';
+    }).join("");
+    var targetNotes = target && target.eligibilityNotes && target.eligibilityNotes.length
+      ? target.eligibilityNotes.map(function (n) { return '<li>' + n + '</li>'; }).join("") : '';
+    var targetName = target ? target.name : "the recommended plan";
+    var monthRows = st && st.dashboard && st.dashboard.rows ? st.dashboard.rows.map(function (r) {
+      return '<tr><td>' + r.ym + '</td><td class="num">' + (r.actual ? usd2(r.actual.total) : '—') + '</td>' +
+        '<td class="num">' + (r.best ? usd2(r.best.total) : '—') + '</td><td class="num">' +
+        (r.difference === null ? '—' : signed(r.difference)) + '</td></tr>';
+    }).join("") : '';
+    return '<section id="paid-report" class="paid-report" aria-labelledby="paid-report-title">' +
+      '<div class="eyebrow">Paid analysis</div><h2 id="paid-report-title">Your complete rate-switch report</h2>' +
+      '<p>Prepared for your declared situation. The recommendation is independent of Con Edison and uses the rate data shown below.</p>' +
+      '<h3 class="sec">Complete plan comparison</h3>' +
+      '<div style="overflow-x:auto"><table id="report-plan-comparison"><thead><tr><th>Rate plan</th><th class="num">Annual cost</th><th>Eligibility and terms</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<h3 class="sec">Switching guidance</h3>' +
+      '<ol class="switch-steps"><li>Request <strong>' + targetName + '</strong> through Con Edison, using that exact plan name.</li>' +
+      '<li>Allow the switch to take effect with a future meter read — typically the next bill or the one after (1–2 billing cycles).</li>' +
+      (targetNotes ? '<li>Before enrolling, review the target plan terms:<ul class="pnotes">' + targetNotes + '</ul></li>' : '') +
+      '<li>Keep the first new bill and re-run this analysis after the switch so the projected comparison can be checked against what you actually paid.</li></ol>' +
+      '<p class="legend">Optional concierge switching and first-year verification are separate services. The report price does not promise enrollment or guaranteed future savings.</p>' +
+      '<h3 class="sec">Month-by-month counterfactual charges</h3>' +
+      '<div style="overflow-x:auto"><table id="report-monthly-comparison"><thead><tr><th>Period</th><th class="num">Actual/current plan</th><th class="num">Best eligible plan</th><th class="num">Difference</th></tr></thead><tbody>' + monthRows + '</tbody></table></div>' +
+      '</section>';
+  }
+
+  function bindCheckout(a) {
+    var pay = $("report-pay");
+    if (!pay) return;
+    pay.addEventListener("click", function () {
+      var consent = {
+        version: a.paid.offer.policyVersion,
+        sawPrice: !!$("consent-price").checked,
+        sawContents: !!$("consent-contents").checked,
+        sawNoAffiliation: !!$("consent-affiliation").checked,
+        sawEstimateCaveat: !!$("consent-estimate").checked,
+        authorizesCharge: !!$("consent-charge").checked,
+        grantedAt: Date.now()
+      };
+      var authorized = C.paymentTransition(paymentFlow, "consent", { consent: consent });
+      paymentFlow = authorized;
+      if (authorized.state !== "consented") {
+        var bad = $("checkout-status");
+        if (bad) bad.textContent = authorized.reason || "Please review every acknowledgment before paying.";
+        return;
+      }
+      var provider = checkoutProvider();
+      if (!provider) {
+        paymentFlow.state = "unavailable";
+        paymentFlow.reason = "no browser checkout adapter is wired into this deployment.";
+        render(a, lastLabel, { noScroll: true });
+        return;
+      }
+      paymentFlow = C.paymentTransition(paymentFlow, "charge");
+      render(a, lastLabel, { noScroll: true });
+      var request = { product: a.paid.offer.product, amount: a.paid.offer.price, currency: a.paid.offer.currency };
+      var result;
+      try { result = provider.charge(request); } catch (e) { result = Promise.reject(e); }
+      Promise.resolve(result).then(function () {
+        paymentFlow = C.paymentTransition(paymentFlow, "charge_succeeded", {}, { now: Date.now() });
+        render(a, lastLabel, { noScroll: true });
+      }).catch(function () {
+        paymentFlow = C.paymentTransition(paymentFlow, "charge_failed");
+        render(a, lastLabel, { noScroll: true });
+      });
+    });
+  }
+
   function render(a, label, opts) {
     opts = opts || {};
     err.hidden = true;
     // Track successful parse for analytics funnel — bare name only
     A.track('parse_success');
+    var paid = a.paid || C.paidConversion(a);
+    syncPaymentFlow(paid);
     var saves = a.savingsIfSwitch > 1;                 // >$1 to avoid rounding noise
     var vClass = saves ? "good" : "warn";
     var period = (a.ndays >= 350 && a.ndays <= 385) ? "over the past year" : "over " + a.ndays + " days (annualized)";
@@ -380,6 +572,8 @@
       confidenceBlock(a) +
       (lastBillingNote ? '<p class="legend">' + lastBillingNote + "</p>" : "") +
       '<div class="verdict ' + vClass + '">' + vHtml + '</div>' +
+      freePreview(a, paid, curEntry, period) +
+      checkoutSection(paid, paymentFlow) +
       '<div class="actions"><button id="share-btn" class="btn-share" type="button">↗ Share this result</button></div>' +
       (stalenessWarning || '') + blockerNote +
       '<div class="stats">' +
@@ -397,12 +591,13 @@
         '<p class="legend">Rate basis: ' + R.meta.asOf + '</p></details>' +
       '<h3 class="sec">Your load shape (why)</h3>' + shape +
       '<h3 class="sec">Month by month</h3>' + monthlyChart(a.months, a.smartChargeNY.enabled) +
-      periodSection(st.dashboard) + billsSection(a) + monitorSection(a, st);
+      periodSection(st.dashboard) + billsSection(a) + monitorSection(a, st) + paidReportSection(a, st);
 
     // footer assumptions/sources
     $("assumptions").innerHTML = '<strong>Assumptions:</strong> ' + R.meta.basis + ' ' + R.meta.peakWindow + ' ' + R.meta.caveats.join(" ");
     $("sources").innerHTML = '<strong>Sources:</strong> ' + R.meta.sources.map(function (s) { return '<a href="' + s + '" target="_blank" rel="noopener">' + s.replace(/^https?:\/\//, "").split("/")[0] + "</a>"; }).join(" · ");
     var sb = $("share-btn"); if (sb) sb.addEventListener("click", function () { shareCard(a); });
+    bindCheckout(a);
     var del = $("monitor-delete");
     if (del) del.addEventListener("click", function () {
       if (!confirm("Delete your stored monitoring history? This removes every retained month and bill summary from this browser, permanently.")) return;
@@ -422,6 +617,7 @@
   // so everywhere demand plans appear. The sample is demo data: analyzed, never
   // retained.
   function ingestAndRender(parsed, label, source, bills, billingNote) {
+    resetPaymentFlow();
     if (M) {
       try {
         series = M.ingest(series || M.blank(), {
@@ -485,12 +681,14 @@
     // Track sample button click for analytics funnel — bare name only
     A.track('sample_click');
     var s = window.CONED_SAMPLE;
+    resetPaymentFlow();
     lastParsed = { months: s.months, ndays: s.ndays };
     lastBills = []; lastBillingNote = null;    // the sample ships without billing summaries
     lastLabel = s.label;
     render(C.analyze(lastParsed, calcOptions()), s.label);
   });
   if (evToggle) evToggle.addEventListener("change", function () {
+    resetPaymentFlow();
     if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
   });
   // Declared eligibility facts (territory, current plan, meter, solar, ESCO, heat pump) —
@@ -502,12 +700,14 @@
   }
   ["pf-territory", "pf-plan", "pf-meter"].forEach(function (id) {
     var el = $(id); if (el) el.addEventListener("change", function () {
+      resetPaymentFlow();
       persistProfile();
       if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
     });
   });
   ["pf-solar", "pf-esco", "pf-heatpump"].forEach(function (id) {
     var el = $(id); if (el) el.addEventListener("change", function () {
+      resetPaymentFlow();
       persistProfile();
       if (lastParsed) render(C.analyze(lastParsed, calcOptions()), lastLabel);
     });
@@ -566,7 +766,7 @@
   if (typeof fetch === "function") {
     fetch("rates.json", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { if (j) { C.applyRates(j); showVer(); stalenessWarning = checkStaleness(); } })
+      .then(function (j) { if (j) { C.applyRates(j); showVer(); stalenessWarning = checkStaleness(); if (lastParsed) { resetPaymentFlow(); render(C.analyze(lastParsed, calcOptions()), lastLabel, { noScroll: true }); } } })
       .catch(function () {});
   }
 

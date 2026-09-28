@@ -1405,6 +1405,8 @@ try {
     "analyze() publishes the annual-savings range alongside the free verdict");
   assert(sampleA.paid.eligible === false && sampleA.paid.noSavings !== null && sampleA.paid.offer === null,
     "the peak-heavy sample honestly lands on the no-savings fork");
+  assert(sampleA.paid.noSavings.message.includes("nothing about this result is hidden behind payment"),
+    "the free no-savings path explicitly promises no charge and no hidden result");
 
   const flatHours = [], flatMonths = [];
   [["2026-07", 7, true], ["2027-01", 1, false]].forEach(([ym, mo, summer]) => {
@@ -1417,6 +1419,9 @@ try {
     "a flat heavy load clears the meaningful-savings bar on its demand target — offered, not collectible");
   assert(flatA.paid.reasons[0].includes("charging isn't armed"),
     "the offer names the certification gate it waits behind");
+  assert(flatA.paid.offer.includes.includes("complete plan-by-plan comparison") &&
+         flatA.paid.offer.includes.includes("step-by-step enrollment instructions"),
+    "a purchase-eligible result advertises the complete comparison and switching guidance");
 
   console.log("");
 } catch (e) {

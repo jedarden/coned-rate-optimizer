@@ -9,6 +9,20 @@ pricing, Green Button Connect, Meta acquisition assumptions, accuracy gates, and
 the month-over-month bill experience, is documented in
 [`docs/product-strategy.md`](docs/product-strategy.md).
 
+## Free result and paid report
+
+The browser first returns a free verdict: the current-plan recommendation, a
+conservative annual savings range, confidence and data-quality warnings, and a
+no-charge result when no eligible plan offers meaningful savings. A one-time
+**$29 self-service report** is offered only when the low end of that projected
+first-year savings range is greater than **$150**. The report adds the complete
+plan comparison, month-by-month counterfactual charges, eligibility and
+lock-in terms, and step-by-step switching guidance. Charging is deliberately
+disabled until the strategy's accuracy gate (20 diverse backtested accounts,
+with at least 95% of supported periods within 2% of the real bill) and a
+payment provider are both certified; the free result is never blocked by that
+checkout state.
+
 **Privacy note:** Your interval and billing data are parsed, analyzed, and charted entirely in your browser — never uploaded to or stored on this site's server, on either the file path or the Green Button Connect path (where the feeds flow from ConEd straight into your tab). The connect path's only server step is the one-time OAuth code→token exchange at `/api/gbc/token`, and `test/gbc-sandbox.js` enforces that boundary mechanically: it records every request its sandbox receives and fails the run if an exchange body is anything but `{ code, redirectUri }`, if the access token ever appears in a request body, or if any interval/billing payload bytes ever arrive inside one. Separately, the site uses Cloudflare Web Analytics (cookie-less, privacy-safe) to measure visit traffic and user interaction (sample button clicks, successful parses, parse errors) — only anonymous pageview counts and interaction events are collected, and even those are contract-bound: the event set is an explicit allowlist and every event is a bare static name, with `test/analytics-privacy.js` proving no interval data, billing data, account identifiers, tokens, filenames, or raw file content can ride along. Full boundary: [`docs/notes/gbc-data-boundary.md`](docs/notes/gbc-data-boundary.md) · analytics contract: [`docs/notes/analytics-privacy.md`](docs/notes/analytics-privacy.md).
 
 ## What it does
