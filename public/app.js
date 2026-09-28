@@ -176,7 +176,9 @@
         "<td>" + momText(r) + "</td></tr>";
     }).join("");
     var summary;
-    if (d.difference > 0.5)
+    if (d.difference === null)
+      summary = "No eligible counterfactual plan could be priced for these periods.";
+    else if (d.difference > 0.5)
       summary = "Staying on " + cur + " cost <strong>" + usd(d.difference) + " more</strong> than the best eligible plan would have, over these " + d.rows.length + " periods.";
     else if (d.difference < -0.5)
       summary = "Your " + cur + " bills came in <strong>" + usd(-d.difference) + " below</strong> the current-rate best-plan pricing — earlier rate schedules were cheaper; the comparison prices alternatives at today's rates.";
@@ -280,10 +282,11 @@
     // gate result (accuracy gate), never a decoration.
     var verified = a.confidence && a.confidence.level === "high" &&
       a.reconciliation && a.reconciliation.rows && a.reconciliation.rows.length;
-    var diffCell = '<span class="' + (d.difference > 0.005 ? "delta-up" : d.difference < -0.005 ? "delta-down" : "") + '">' + usd2(d.difference) + "</span>";
+    var diffCell = d.difference === null ? "—" : '<span class="' + (d.difference > 0.005 ? "delta-up" : d.difference < -0.005 ? "delta-down" : "") + '">' + usd2(d.difference) + "</span>";
+    var bestTotal = d.difference === null ? "not available" : usd2(d.bestTotal);
     parts.push('<div class="stats">' +
       '<div class="stat"><div class="k">Actually paid · ' + d.rows.length + ' periods</div><div class="v">' + usd2(d.actualTotal) + "</div></div>" +
-      '<div class="stat"><div class="k">Best eligible plan, same periods</div><div class="v">' + usd2(d.bestTotal) + "</div></div>" +
+      '<div class="stat"><div class="k">Best eligible plan, same periods</div><div class="v">' + bestTotal + "</div></div>" +
       '<div class="stat"><div class="k">Cumulative difference</div><div class="v">' + diffCell + "</div></div></div>");
     parts.push(verified
       ? '<p class="legend">✓ <strong>Verified:</strong> this cumulative figure rests on ' + a.reconciliation.rows.length + " actual bill" +
@@ -319,9 +322,12 @@
     g.fillStyle = "#0e1116"; g.fillRect(0, 0, W, H);
     g.fillStyle = "#5ea0f0"; g.fillRect(0, 0, W, 12);
     g.fillStyle = "#9aa4b2"; g.font = "600 34px " + F; g.fillText("ConEd Rate Optimizer", 70, 112);
-    var save = a.savingsIfSwitch > 1;
+    var save = !!a.switchTarget && a.savingsIfSwitch > 1;
+    var currentKey = a.currentPlanKey || (a.profile && a.profile.currentPlan) || "standard";
+    var currentRate = C.planRates(currentKey) || {};
+    var currentName = currentRate.short || currentRate.name || currentKey;
     g.fillStyle = save ? "#4ad08a" : "#e0a05a"; g.font = "800 92px " + F;
-    g.fillText(save ? "Save " + usd(a.savingsIfSwitch * a.annualFactor) + "/yr" : "Stay on Standard", 70, 240);
+    g.fillText(save ? "Save " + usd(a.savingsIfSwitch * a.annualFactor) + "/yr" : "Stay on " + currentName, 70, 240);
     g.fillStyle = "#e8eaed"; g.font = "400 32px " + F;
     g.fillText(save ? "by switching to " + (a.switchTarget ? a.switchTarget.name : a.cheapest.name) : "no ConEd plan switch lowers this bill", 70, 300);
     g.font = "400 30px " + F; var y = 392;
@@ -578,10 +584,15 @@
     A.track('parse_success');
     var paid = a.paid || C.paidConversion(a);
     syncPaymentFlow(paid);
-    var saves = a.savingsIfSwitch > 1;                 // >$1 to avoid rounding noise
+    var saves = !!a.switchTarget && a.savingsIfSwitch > 1; // >$1 to avoid rounding noise
     var vClass = saves ? "good" : "warn";
     var period = (a.ndays >= 350 && a.ndays <= 385) ? "over the past year" : "over " + a.ndays + " days (annualized)";
-    var curEntry = a.plans.filter(function (p) { return p.current; })[0] || a.plans[0];
+    var currentKey = a.currentPlanKey || (a.profile && a.profile.currentPlan) || "standard";
+    var curEntry = a.plans.filter(function (p) { return p.current; })[0];
+    if (!curEntry) {
+      var currentRate = C.planRates(currentKey) || {};
+      curEntry = { key: currentKey, name: currentRate.name || currentKey, short: currentRate.short || currentKey, cost: null };
+    }
     var curName = curEntry.short || curEntry.name;
 
     // eligibility blockers (wrong territory / account class) — the numbers stay on screen
@@ -591,7 +602,10 @@
 
     // verdict
     var vHtml;
-    if (saves) {
+    if (a.currentPlanPriced === false) {
+      vHtml = '<h2>More data needed for an actionable comparison</h2>' +
+        '<p>Your declared current plan (' + curName + ') is priced from hourly interval data. Import that data before using a savings recommendation.</p>';
+    } else if (saves) {
       vHtml = '<h2>You could lower your bill 🎉</h2>' +
         '<div class="big">Save ' + usd(a.savingsIfSwitch * a.annualFactor) + '/yr</div>' +
         '<p>Switching to <strong>' + a.switchTarget.name + '</strong> would cost less than your current ' + curEntry.name + ' plan, based on your actual usage ' + period + '.</p>';
@@ -665,8 +679,8 @@
       (stalenessWarning || '') + blockerNote +
       '<div class="stats">' +
         '<div class="stat"><div class="k">Your usage</div><div class="v">' + Math.round(a.totalKwh * a.annualFactor).toLocaleString() + ' kWh/yr</div></div>' +
-        '<div class="stat"><div class="k">Current plan (' + curName + ')</div><div class="v">' + usd(curEntry.cost * a.annualFactor) + '/yr</div></div>' +
-        '<div class="stat"><div class="k">Best plan</div><div class="v">' + (a.cheapest.short || a.cheapest.name) + '</div></div>' +
+        '<div class="stat"><div class="k">Current plan (' + curName + ')</div><div class="v">' + (curEntry.cost === null ? 'not priced' : usd(curEntry.cost * a.annualFactor) + '/yr') + '</div></div>' +
+        '<div class="stat"><div class="k">Best eligible plan</div><div class="v">' + (a.cheapest ? (a.cheapest.short || a.cheapest.name) : 'none available') + '</div></div>' +
       '</div>' +
       (a.eligibility.notes.length ? '<p class="legend">' + a.eligibility.notes.join(' ') + '</p>' : '') +
       (label ? '<p class="legend">Showing: ' + label + '</p>' : '') +

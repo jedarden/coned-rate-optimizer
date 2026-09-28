@@ -759,6 +759,12 @@
     var factor = a.annualFactor || 1;
     var reasons = [];
     var target = a.switchTarget || null;
+    // The report gate is a second boundary, not a trust boundary around a caller's
+    // `switchTarget` object. Reuse the analysis' availability flags so a stale report,
+    // a hand-built result, or a changed eligibility profile cannot turn an excluded
+    // plan into a valid savings claim.
+    var listedTarget = target && (a.plans || []).filter(function (p) { return p.key === target.key; })[0];
+    if (listedTarget && (listedTarget.avail === false || listedTarget.current)) target = null;
     var blockers = (a.eligibility && a.eligibility.blockers) || [];
     var cur = (a.plans || []).filter(function (p) { return p.current; })[0] || (a.plans || [])[0];
     var curCost = cur ? cur.cost : 0, altCost = target ? target.cost : curCost;
@@ -1099,7 +1105,10 @@
   function periodDashboard(months, hours, ctx) {
     ctx = ctx || {};
     var cur = ctx.currentPlan || "standard";
-    var eligible = ctx.eligibleKeys && ctx.eligibleKeys.length ? ctx.eligibleKeys : [cur];
+    // An explicitly empty eligibility set means there is no valid counterfactual
+    // (for example, a non-SC1 or outside-territory account). Do not fall back to
+    // the current plan and accidentally label an ineligible charge as "best".
+    var eligible = Array.isArray(ctx.eligibleKeys) ? ctx.eligibleKeys.slice() : [cur];
     var rows = [], actualTotal = 0, bestTotal = 0;
     periodsFrom({ months: months, hours: hours }).forEach(function (p) {
       var yearM = /^(\d{4})-/.exec(String(p.ym)), year = yearM ? +yearM[1] : null;
@@ -1116,7 +1125,7 @@
         var c = pricePeriod(p, k, ctx.options);
         if (c && (!best || c.total < best.total)) best = c;
       });
-      if (!best) best = actual;
+      if (!best && !Array.isArray(ctx.eligibleKeys)) best = actual;
       var prev = rows.length ? rows[rows.length - 1] : null;
       var mom = prev && actual ? decomposeChange(
         { kwh: prev.kwh, days: prev.days, total: prev.actual.total, fixed: prev.actual.fixed },
@@ -1141,7 +1150,8 @@
     });
     return {
       currentPlan: cur, rows: rows,
-      actualTotal: actualTotal, bestTotal: bestTotal, difference: actualTotal - bestTotal,
+      actualTotal: actualTotal, bestTotal: bestTotal,
+      difference: rows.length && rows.every(function (r) { return !!r.best; }) ? actualTotal - bestTotal : null,
       partialCount: rows.filter(function (r) { return r.partial; }).length,
       esco: !!ctx.esco
     };
@@ -1176,6 +1186,24 @@
     heatPump: false            // unlocks ConEd's 12-month Steady Use price guarantee note
   };
   var PLAN_KEYS = ["standard", "tou", "steady", "smart"];
+  var PLAN_ALIASES = {
+    standardresidential: "standard",
+    "time-of-use": "tou",
+    timeofuse: "tou",
+    steadyuse: "steady",
+    smartenergy: "smart"
+  };
+
+  function normalizeBoolean(value, fallback) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      if (/^(?:true|yes|1)$/i.test(value.trim())) return true;
+      if (/^(?:false|no|0)$/i.test(value.trim())) return false;
+    }
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return fallback;
+  }
 
   function normalizeProfile(raw) {
     raw = raw || {};
@@ -1183,14 +1211,26 @@
     Object.keys(DEFAULT_PROFILE).forEach(function (k) {
       var v = raw[k], d = DEFAULT_PROFILE[k];
       if (v === undefined || v === null || v === "") { p[k] = d; return; }
-      if (typeof d === "boolean") { p[k] = !!v; return; }
+      if (typeof d === "boolean") { p[k] = normalizeBoolean(v, d); return; }
       p[k] = String(v).toLowerCase();
     });
     if (p.territory !== "nyc" && p.territory !== "westchester") p.territory = "outside";
     p.serviceClass = p.serviceClass === "sc1" ? "sc1" : "other";
     if (p.meter !== "smart" && p.meter !== "legacy") p.meter = "legacy";
+    p.currentPlan = PLAN_ALIASES[p.currentPlan] || p.currentPlan;
     if (PLAN_KEYS.indexOf(p.currentPlan) === -1) p.currentPlan = "standard";
     return p;
+  }
+
+  function planRequirementReason(key, profile, ctx) {
+    var r = planRates(key), requires = r.requires || {};
+    if (requires.serviceClass && requires.serviceClass.toLowerCase() !== profile.serviceClass.toLowerCase())
+      return "SC1 residential accounts only";
+    if (requires.meter && requires.meter !== profile.meter)
+      return "requires a smart meter — a traditional meter can't bill on demand";
+    if (r.basis === "demand" && !ctx.hasDemand)
+      return "requires a smart meter's hourly interval data — your file has none, so it can't even be estimated";
+    return null;
   }
 
   // The pure rule check. ctx: { hasDemand: interval hours present, smartCharge: EV what-if on }.
@@ -1221,11 +1261,12 @@
       notes.push("Your result is priced on ConEd's published NYC SC1 averages — Westchester delivery rates differ, so treat totals as directional.");
     }
 
-    // -- meter: the demand plans bill on peak kW, which only a smart meter's hourly data can show
+    // -- plan requirements: read the published requirements from the plan data so the
+    //    same rules apply after a rates.json refresh, rather than duplicating plan-specific
+    //    checks in the engine.
     each(function (key, v) {
-      if (key !== "steady" && key !== "smart") return;
-      if (profile.meter === "legacy") { v.available = false; v.reason = "requires a smart meter — a traditional meter can't bill on demand"; }
-      else if (!ctx.hasDemand) { v.available = false; v.reason = "requires a smart meter's hourly interval data — your file has none, so it can't even be estimated"; }
+      var reason = planRequirementReason(key, profile, ctx);
+      if (reason) { v.available = false; v.reason = reason; }
     });
 
     // -- current plan: it stays visible as your baseline, but is never a switch candidate
@@ -1266,10 +1307,14 @@
       if (conflict) verdicts.steady.notes.push(conflict);
     }
 
-    return { profile: profile, blockers: blockers, notes: notes, verdicts: verdicts };
+    return {
+      profile: profile, blockers: blockers, notes: notes, verdicts: verdicts,
+      eligibleKeys: PLAN_KEYS.filter(function (key) { return verdicts[key].available; })
+    };
   }
 
   function analyze(parsed, options) {
+    options = options || {};
     var months = parsed.months ? parsed.months : parsed, hours = parsed.hours, ndays = parsed.ndays || 365;
     var totals = months.reduce(function (a, m) { a.total += m.total; a.peak += m.peak; a.off += m.off; return a; }, { total: 0, peak: 0, off: 0 });
     var factor = (ndays >= 350 && ndays <= 385) ? 1 : (ndays > 0 ? 365 / ndays : 1);
@@ -1295,13 +1340,23 @@
       p.excludedReason = v.available ? null : v.reason;
       p.eligibilityNotes = v.notes.slice();
     });
-    var currentPlan = plans.filter(function (p) { return p.current; })[0] || plans[0];
-    var switchable = plans.filter(function (p) { return p.avail && !p.current; });
+    var currentPlan = plans.filter(function (p) { return p.current; })[0] || null;
+    // A demand-plan current account cannot be treated as Standard merely because the
+    // retained/imported input has no hourly readings. There is no defensible baseline
+    // cost in that shape, so the result is reference-only until the current plan can be
+    // priced. This is especially important to monitoring rechecks, which otherwise could
+    // alert from a silently substituted plan.
+    if (!currentPlan) {
+      var currentRate = planRates(elig.profile.currentPlan);
+      elig.blockers.push("Your current " + (currentRate.short || currentRate.name || elig.profile.currentPlan) +
+        " plan cannot be priced from this file — import hourly interval data before using its savings comparison.");
+    }
+    var switchable = currentPlan ? plans.filter(function (p) { return p.avail && !p.current; }) : [];
     var switchTarget = switchable.reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, null);
-    var cheapest = plans.filter(function (p) { return p.avail !== false; })
-      .reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, currentPlan);
+    var cheapest = plans.filter(function (p) { return p.avail === true; })
+      .reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, null);
     var bestDemand = plans.filter(function (p) { return p.demand && p.avail; }).reduce(function (a, b) { return !a || b.cost < a.cost ? b : a; }, null);
-    var curCost = currentPlan ? currentPlan.cost : std;
+    var curCost = currentPlan ? currentPlan.cost : null;
     // Ranked plan-by-plan comparison: viable plans cheapest-first, excluded ones after (still
     // visible, with the reason), deltas vs the current Standard plan.
     var comparison = plans.map(function (p) {
@@ -1361,7 +1416,9 @@
       touDelta: tou - std, touDeltaAnnual: (tou - std) * factor,
       // Savings if you leave your current plan for the best eligible alternative — negative
       // means switching can't help. (With the default profile the current plan is Standard.)
-      savingsIfSwitch: switchTarget ? curCost - switchTarget.cost : 0,
+      currentPlanKey: elig.profile.currentPlan,
+      currentPlanPriced: !!currentPlan,
+      savingsIfSwitch: switchTarget && curCost !== null ? curCost - switchTarget.cost : 0,
       recommendation: recommendation,
       dashboard: dashboard,
       reconciliation: reconciliation,

@@ -589,8 +589,15 @@ async function runFormatTests() {
         `${fixture.id}: every ineligible plan is excluded`);
       assert(verdicts[fixture.currentPlan].current === true,
         `${fixture.id}: ${fixture.currentPlan} is the declared current plan`);
-      assert(analysis.plans.find((plan) => plan.current).key === fixture.currentPlan,
-        `${fixture.id}: analysis carries the declared current plan`);
+      if (fixture.currentPlanUnpriced) {
+        assert(analysis.currentPlanPriced === false && !analysis.plans.some((plan) => plan.current),
+          `${fixture.id}: an unpriceable current plan is not substituted into the priced inventory`);
+        assert(analysis.switchTarget === null && analysis.savingsIfSwitch === 0,
+          `${fixture.id}: an unpriceable current plan cannot produce valid savings`);
+      } else {
+        assert(analysis.plans.find((plan) => plan.current).key === fixture.currentPlan,
+          `${fixture.id}: analysis carries the declared current plan`);
+      }
 
       (fixture.blockers || []).forEach((phrase) => {
         assert(analysis.eligibility.blockers.some((note) => note.includes(phrase)),
@@ -632,9 +639,16 @@ async function runFormatTests() {
         if (comparison) assert(comparison.avail === true && Number.isFinite(comparison.annualCost) && comparison.annualCost > 0,
           `${fixture.id}: eligible ${key} alternative has an annual price`);
       });
+      analysis.dashboard.rows.forEach((row) => {
+        assert(!row.bestKey || expectedEligible.includes(row.bestKey),
+          `${fixture.id}: dashboard savings only use an eligible plan (${row.bestKey || "none"})`);
+      });
 
       const alternatives = expectedEligible.filter((key) => key !== fixture.currentPlan);
-      if (alternatives.length) {
+      if (fixture.currentPlanUnpriced) {
+        assert(analysis.eligibility.blockers.length > 0,
+          `${fixture.id}: missing current-plan data blocks the recommendation`);
+      } else if (alternatives.length) {
         assert(analysis.switchTarget && alternatives.includes(analysis.switchTarget.key),
           `${fixture.id}: switch target is an eligible alternative`);
         assert(analysis.switchTarget.key !== fixture.currentPlan,
@@ -649,6 +663,13 @@ async function runFormatTests() {
           `${fixture.id}: TOU summer peak pricing is higher than the rest-of-year rate`);
       }
     });
+
+    const normalized = calc.checkEligibility({
+      currentPlan: "steadyUse", solar: "false", esco: "true", heatPump: "0"
+    }, { hasDemand: true });
+    assert(normalized.profile.currentPlan === "steady" && normalized.profile.solar === false &&
+           normalized.profile.esco === true && normalized.profile.heatPump === false,
+      "eligibility profile normalization accepts plan aliases and does not treat string false as true");
     console.log("");
   } catch (e) {
     console.log(`  ✗ Eligibility matrix tests failed: ${e.message}`);
@@ -1383,6 +1404,16 @@ try {
   assert(none.reasons[0].includes("nothing to sell"),
     `the no-savings reason says so outright ("${none.reasons[0].slice(0, 48)}…")`);
 
+  const excludedTarget = calc.paidConversion(mkA({
+    plans: [
+      { key: "standard", name: "Standard Residential", cost: 2000, current: true, avail: true },
+      { key: "tou", name: "Time-of-Use", cost: 900, avail: false, excludedReason: "not a ConEd account" }
+    ],
+    switchTarget: { key: "tou", name: "Time-of-Use", cost: 900 }
+  }));
+  assert(excludedTarget.eligible === false && excludedTarget.offer === null && excludedTarget.noSavings !== null,
+    "the paid report gate refuses an excluded plan even when a stale target claims savings");
+
   const under = calc.paidConversion(mkA({}));
   assert(under.eligible === false && under.offer === null && under.noSavings === null,
     "a real but meaningless saving is neither offered nor dressed up as no-savings");
@@ -1865,6 +1896,23 @@ try {
   const bucket = (total, peak) => ({ ym: "2025-07", month: 7, total, peak, off: total - peak,
     summer: true, ndays: 31 });
   const analyzeSeries = (s) => calc.analyze(mon.restoreParsed(s), { profile: { currentPlan: "standard" } });
+
+  const offPeakAnalysis = calc.analyze({ months: [bucket(400, 10)], ndays: 31 },
+    { profile: { currentPlan: "standard" } });
+  const staleEligibility = Object.assign({}, offPeakAnalysis, {
+    switchTarget: { key: "steady", name: "Steady Use Rate", cost: 1 },
+    plans: offPeakAnalysis.plans.map((plan) => plan.key === "standard"
+      ? plan : Object.assign({}, plan, { avail: false, excludedReason: "stale eligibility" }))
+  });
+  const sanitized = mon.recommendationSnapshot(staleEligibility);
+  assert(sanitized.targetPlan === null && sanitized.outcome !== "switch",
+    "monitoring rechecks cannot turn a stale or ineligible plan into a switch target");
+
+  const demandWithoutHours = calc.analyze({ months: [bucket(400, 10)], ndays: 31 },
+    { profile: { currentPlan: "steady" } });
+  const blockedSnapshot = mon.recommendationSnapshot(demandWithoutHours);
+  assert(blockedSnapshot.outcome === "blocked" && blockedSnapshot.targetPlan === null,
+    "monitoring rechecks retain the eligibility block when the current demand plan is unpriceable");
 
   // First calculation establishes a local baseline and is never presented as an alert.
   let steady = mon.ingest(mon.blank(), { source: "file", importedAt: 1,

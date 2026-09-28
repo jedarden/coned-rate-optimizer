@@ -151,12 +151,31 @@
     return p ? (p.short || p.name) : key;
   }
 
+  function validAlternative(plan, currentKey) {
+    return !!plan && plan.key !== currentKey && plan.current !== true && plan.avail !== false &&
+      plan.available !== false && isFinite(plan.cost);
+  }
+
+  function eligibleTarget(analysis, currentKey) {
+    var plans = (analysis && analysis.plans || []).filter(function (p) {
+      return validAlternative(p, currentKey);
+    });
+    var declared = analysis && analysis.switchTarget;
+    if (declared) {
+      var listed = plans.filter(function (p) { return p.key === declared.key; })[0];
+      if (listed) return listed;
+    }
+    return plans.reduce(function (best, plan) {
+      return !best || plan.cost < best.cost ? plan : best;
+    }, null);
+  }
+
   function recommendationSnapshot(analysis) {
     analysis = analysis || {};
     var blockers = analysis.eligibility && analysis.eligibility.blockers || [];
     var currentKey = currentPlanKey(analysis);
     var current = (analysis.plans || []).filter(function (p) { return p.key === currentKey; })[0];
-    var target = analysis.switchTarget || null;
+    var target = eligibleTarget(analysis, currentKey);
     var saves = !!target && current && target.cost < current.cost - 0.005;
     var outcome = blockers.length ? "blocked" : saves ? "switch" : target ? "stay" : "no-alternative";
     var targetKey = outcome === "switch" ? target.key : null;
@@ -167,8 +186,8 @@
       currentPlanName: planName(analysis, currentKey),
       targetPlan: targetKey,
       targetPlanName: planName(analysis, targetKey),
-      annualSavings: outcome === "switch" && isFinite(analysis.savingsIfSwitch)
-        ? Math.max(0, analysis.savingsIfSwitch * (analysis.annualFactor || 1)) : 0,
+      annualSavings: outcome === "switch" && current && target
+        ? Math.max(0, (current.cost - target.cost) * (analysis.annualFactor || 1)) : 0,
       recommendation: analysis.recommendation || "No recommendation available.",
       blockers: blockers.slice()
     };

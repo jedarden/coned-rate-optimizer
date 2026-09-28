@@ -81,6 +81,32 @@
       }
     },
     {
+      "id": "current-steady-without-interval-data",
+      "input": "months-only",
+      "profile": {"currentPlan": "steady"},
+      "eligiblePlans": ["standard", "tou"],
+      "currentPlan": "steady",
+      "currentPlanUnpriced": true,
+      "blockers": ["current Steady Use", "hourly interval data"],
+      "excludedPlans": {
+        "steady": "interval data",
+        "smart": "interval data"
+      }
+    },
+    {
+      "id": "current-smart-without-interval-data",
+      "input": "months-only",
+      "profile": {"currentPlan": "smart"},
+      "eligiblePlans": ["standard", "tou"],
+      "currentPlan": "smart",
+      "currentPlanUnpriced": true,
+      "blockers": ["current Smart Energy", "hourly interval data"],
+      "excludedPlans": {
+        "steady": "interval data",
+        "smart": "interval data"
+      }
+    },
+    {
       "id": "outside-coned-territory",
       "profile": {"territory": "outside"},
       "eligiblePlans": [],
