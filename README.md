@@ -109,6 +109,7 @@ docs/
 verify.js          <- Node verification script
 scripts/
   validate-rates.js         <- tariff data gate (docs/tariff-update-workflow.md)
+  check-rate-drift.js       <- strict deploy-time mirror check for rates.json/calc.js
   definition-of-done.sh     <- gate + test suite + sandbox + verify: run before every push
   provision-gbc-bindings.sh <- out-of-band Pages binding provisioning; values stay on stdin
   smoke-gbc-production.js   <- live production binding/upstream-auth smoke check; logs no bodies
@@ -119,7 +120,7 @@ tools/
                                 authorization + import flow, refused-callback
                                 shapes, token lifetime, and the app-server
                                 boundary checks (needs playwright)
-test/              <- automated test suite and fixtures
+test/              <- automated test suite, tariff-refresh regression, and fixtures
   test.js          <- automated tests for calc.js core (+ GBC core, Test 17;
                       persistent monitoring, Test 21)
   gbc-sandbox.js   <- sandbox Third-Party App authorization: mock OAuth server +

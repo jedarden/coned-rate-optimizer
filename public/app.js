@@ -752,7 +752,7 @@
   var stalenessWarning = null; // Cache staleness check result
   function showVer() { if (vEl && C.RATES.meta.version) vEl.textContent = "v" + C.RATES.meta.version; }
 
-  // Check if rates are stale (>6 months since reviewedThrough date)
+  // Check if rates are stale (at or beyond 6 months since reviewedThrough)
   function checkStaleness() {
     if (!C.RATES.meta.reviewedThrough) return null;
     var reviewed = new Date(C.RATES.meta.reviewedThrough);
@@ -762,7 +762,7 @@
     now.setHours(0, 0, 0, 0);
     // Calculate month difference
     var months = (now.getFullYear() - reviewed.getFullYear()) * 12 + (now.getMonth() - reviewed.getMonth());
-    if (months > 6) {
+    if (months >= 6) {
       var reviewedStr = C.RATES.meta.reviewedThrough.substring(0, 7); // YYYY-MM format
       return '<p class="legend staleness">⚠️ Rates last verified ' + reviewedStr + ' — may be out of date; treat as directional.</p>';
     }

@@ -198,7 +198,9 @@ function validate(rates, calcRates, opts) {
     if (typeof meta.switchTiming !== "string" || !meta.switchTiming) err("meta.switchTiming: must carry the meter-read switch-timing note");
   }
 
-  // calc.js-side release metadata the workflow requires on every tariff change.
+  // Release metadata is mirrored in both files. The version is part of the
+  // provenance contract: it is what support reports and the fallback copy use
+  // to identify the tariff release that a customer actually saw.
   const calcMeta = (calcRates && calcRates.meta) || {};
   if (!/^\d+\.\d+\.\d+$/.test(String(calcMeta.version || ""))) {
     err(`calc.js meta.version: must be semver X.Y.Z (got ${JSON.stringify(calcMeta.version)})`);
@@ -206,8 +208,12 @@ function validate(rates, calcRates, opts) {
   if (!/^\d{4}-\d{2}$/.test(String(calcMeta.updated || ""))) {
     err(`calc.js meta.updated: must be YYYY-MM (got ${JSON.stringify(calcMeta.updated)})`);
   }
-  if (meta && meta.version && meta.version !== calcMeta.version) {
-    warn(`meta.version: rates.json says ${meta.version} but calc.js says ${calcMeta.version} — bump both together`);
+  if (meta) {
+    if (!/^\d+\.\d+\.\d+$/.test(String(meta.version || ""))) {
+      err(`meta.version: must be the semver X.Y.Z release marker mirrored in calc.js (got ${JSON.stringify(meta.version)})`);
+    } else if (meta.version !== calcMeta.version) {
+      err(`meta.version: rates.json says ${meta.version} but calc.js says ${calcMeta.version} — bump both together`);
+    }
   }
 
   // ---- plans: presence, metadata, rate fields by pricing basis ----
@@ -633,6 +639,9 @@ function selfTest() {
         shOut.warnings.some((w) => /bill\.periods: the latest published period is \d+ years old/.test(w)));
   mutant("accuracy gate fraction > 1", /gateFraction: required fraction/, (m) => { m.accuracy.gateFraction = 1.5; });
   mutant("missing reviewedThrough", /meta\.reviewedThrough: must be an ISO date/, (m) => { delete m.meta.reviewedThrough; });
+  mutant("missing release version", /meta\.version: must be the semver/, (m) => { delete m.meta.version; });
+  mutant("release version divergence", /meta\.version: rates\.json says/,
+         (m) => { m.meta.version = "9.9.9"; });
   mutant("stale reviewedThrough fails the gate", /rate data is 7 months old/,
          (m) => { m.meta.reviewedThrough = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 7, 15))
            .toISOString().slice(0, 10); });

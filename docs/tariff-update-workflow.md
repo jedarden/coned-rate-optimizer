@@ -3,10 +3,12 @@
 This document is the single authority for how tariff data enters, lives in, and
 ships from this repo. Every change to `public/rates.json`, to the baked-in
 `RATES` defaults in `public/calc.js`, or to any ConEd rate/eligibility number
-the tool displays goes through this workflow. The mechanical half of it is
-`scripts/validate-rates.js` (the "gate"), which runs as part of
+the tool displays goes through this workflow. Its mechanical gates are
+`scripts/validate-rates.js` (schema/provenance) and
+`scripts/check-rate-drift.js` (the release mirror), which run as part of
 `scripts/definition-of-done.sh` — and the deploy pipeline runs that script as
-its build step, so a change that fails the gate fails the deploy.
+its build step, so a change that fails the gate or strict mirror check fails
+the deploy.
 
 Started 2026-09-27 (bead `conedrat-cd9785f1`); decision recorded as
 [ADR-003](../docs/plan/plan.md) in `docs/plan/plan.md`.
@@ -23,16 +25,19 @@ There are exactly two places tariff data lives, and they must agree:
 Merge semantics (`applyRates`): a **deep merge** — objects merge key-by-key,
 arrays and scalars replace wholesale. Derived fields (`RATES._nonDelivery`,
 `RATES.tou.nonCommodity`) are recomputed after every merge, so a `standard.*`
-override cannot leave them stale. `RATES.meta` fields rates.json omits (e.g.
-`version`, `caveats`, `sources`) survive from calc.js.
+override cannot leave them stale. `RATES.meta` fields rates.json omits (for
+example `caveats` and `sources`) survive from calc.js. The release `version`
+is not one of those optional fallback fields: it is required and mirrored so
+a support report identifies the same tariff release on either load path.
 
 **The mirror rule:** rule/provenance data (`name`, `short`, `formerly`,
 `basis`, `eligibility`, `ratesAsOf`, `source`, `requires`, `lockIn`, `solar`,
 `smartChargeConflict`) must be **byte-identical in both files** — the
 eligibility engine and the test suite's mirroring tests depend on it. Numeric
-tariff values may diverge (that is the override mechanism working), but
-divergence is always flagged by the gate so it stays a decision, never an
-accident. The paid-conversion policy's identity fields (`pricing.policyVersion`,
+tariff values may diverge during a local override experiment (that is the
+runtime mechanism working), but the strict release check
+(`scripts/check-rate-drift.js`) rejects that divergence before deployment.
+The paid-conversion policy's identity fields (`pricing.policyVersion`,
 `pricing.basis`, `pricing.chargingCertified`, `pricing.refund`) carry the same
 exact-match rule — consent records are keyed to the policy version (§3
 `pricing`). In practice a tariff release updates **both files in one commit**
@@ -108,7 +113,7 @@ the engine silently ignores — worse than a missing one).
 | `reviewedThrough` | `YYYY-MM-DD` | **The freshness anchor**: the date through which every rate, term, and quote in the file has been verified against its source. The single field both the UI staleness banner and the deploy gate read. |
 | `asOf` | string | Human-readable summary of what the rates are current as of. Mirrors calc.js `meta.asOf`. |
 | `switchTiming` | string | The meter-read switch-timing note shown in the UI. Mirrors calc.js. |
-| `version` | optional `X.Y.Z` | If present it overrides calc.js `meta.version` at runtime — keep them equal; the gate warns on divergence. |
+| `version` | required `X.Y.Z` | Release marker mirrored exactly in calc.js. A mismatch is a gate error and the strict deploy check also rejects it. |
 
 ### Priced plans — common fields (`standard`, `tou`, `steadyUse`, `smartEnergy`)
 
@@ -245,8 +250,9 @@ pass; the validator testing itself, shipped with itself).
 
 - JSON unparseable; missing `_comment`; unknown top-level key; missing plan.
 - `meta.reviewedThrough` missing/malformed, or **≥ 6 months old** (unless
-  `--allow-stale`); `meta.asOf`/`switchTiming` missing; calc.js `meta.version`
-  not semver / `meta.updated` not `YYYY-MM`.
+  `--allow-stale`); `meta.asOf`/`switchTiming` missing; calc.js or rates.json
+  `meta.version` missing/not semver or not equal to the other file;
+  `meta.updated` not `YYYY-MM`.
 - **Per-source cadence** (§2 table, parsed at run time): a plan's `ratesAsOf`
   older than its publication's window — quarterly pages past **95 days**, the
   historical-averages PDF past **13 months** — (unless `--allow-stale`); a
@@ -276,6 +282,11 @@ pass; the validator testing itself, shipped with itself).
   rates.json and the calc.js defaults — and likewise the `pricing` policy's
   identity fields (`policyVersion`, `basis`, `chargingCertified`, `refund`),
   since consent records are keyed to the policy version.
+- **Release drift:** `scripts/check-rate-drift.js` compares every release-data
+  field in rates.json — including numeric tariffs, bill periods, accuracy,
+  pricing, source/effective-date prose, and version metadata — with the
+  baked-in defaults. Any difference blocks deployment, so a failed rates.json
+  fetch cannot silently select a different tariff.
 
 **Warnings (print, do not block):**
 
@@ -288,10 +299,10 @@ pass; the validator testing itself, shipped with itself).
   ≥ 2 years behind the current year (the published history has missed at
   least two annual refreshes — beyond the normal publication lag, the
   reconstruction is pricing real bills at years-old component rates).
-- **Numeric divergence** between rates.json and calc.js defaults — plan
-  numerics and `pricing` policy terms alike (the override path working —
-  flagged so both sides get mirrored in the same release).
-- `meta.version` / wording divergence between the two files.
+- **Numeric divergence** between rates.json and calc.js defaults — reported by
+  the validator and rejected by the strict release check.
+- `meta.version` / wording divergence between the two files (version mismatch
+  is an error; wording is included in the strict release check).
 
 `--allow-stale` exists for exactly one case: knowingly shipping data the UI
 banner will label "may be out of date" (e.g. re-deploying an old release). The
@@ -299,9 +310,11 @@ warning it prints says so on the record.
 
 **Runtime detection (last line of defense):** `app.js` `checkStaleness()`
 shows a banner past 6 months ("may be out of date; treat as directional"),
-`verify.js` warns on rates.json/calc.js drift, and the test suite asserts the
-rule mirroring (tests 10 & 13). The gate catches these **before** deploy; the
-UI banner is what a user sees if something ships stale anyway.
+`verify.js` reports rates.json/calc.js drift using a snapshot taken before the
+runtime override is applied, and the strict check blocks it before deploy.
+The test suite asserts the rule mirroring (tests 10 & 13) plus the focused
+tariff-refresh contract. The UI banner is what a user sees if something ships
+stale anyway.
 
 | Failure mode | Detected by | When |
 |---|---|---|
@@ -315,7 +328,7 @@ UI banner is what a user sees if something ships stale anyway.
 | `ratesAsOf` with no verification date, or a `source` with no §2 row | gate error | pre-deploy gate |
 | Current year priced `projected` | gate warning + meta caveat | gate, then UI |
 | rates.json / calc.js divergence (rules) | gate error; tests 10 & 13 | gate + test suite |
-| rates.json / calc.js divergence (numbers) | gate warning; `verify.js` drift warning | gate + verify |
+| rates.json / calc.js divergence (numbers) | strict mirror check; `verify.js` diagnostic | pre-deploy gate + verify |
 | Malformed or half-mirrored `pricing` policy | `validate-rates.js` errors | pre-deploy gate |
 | Regressed validator itself | `--self-test` in definition of done | every run |
 
@@ -325,7 +338,8 @@ The site deploys **push-to-deploy**: every push to `main` triggers the
 `website-build` Argo WorkflowTemplate, which publishes `public/` to Cloudflare
 Pages (coned.jedarden.com) — ADR-001. There is no separate "deploy rates"
 step; **a tariff release is an ordinary commit to `main` that passes the
-gate.** Work directly on `main` (no branches); stage precise paths.
+gate and strict mirror check.** Work directly on `main` (no branches); stage
+precise paths.
 
 1. **Verify the source.** Pull the authoritative publication (§2) — for coned.com
    pages, via a fresh Wayback snapshot; record its date. If a fetched number
@@ -333,22 +347,22 @@ gate.** Work directly on `main` (no branches); stage precise paths.
 2. **Edit `public/rates.json`** — the new values, the touched plans'
    `ratesAsOf` strings, and `meta.reviewedThrough` = today's verification
    date. Adding a published year: §4's annual-refresh step.
-3. **Mirror `public/calc.js` `RATES`** with the same values. Rule/provenance
-   fields must match byte-for-byte; numeric divergence between the files is
-   allowed by the merge design but must not survive a release — a user whose
-   `rates.json` fetch fails must see the same numbers as one whose fetch
-   succeeds.
-4. **Bump the release markers** in calc.js `meta`: `version` (semver; tariff
-   data refresh = patch or minor per judgment, engine behavior change = minor),
-   `updated` (`YYYY-MM`), and refresh `meta.asOf` if the summary prose is now
-   stale. If ConEd's *terms* (not numbers) changed, quote the new wording in
-   the `lockIn`/`solar`/`smartChargeConflict` notes in **both** files.
+3. **Mirror `public/calc.js` `RATES`** with the same values, including the
+   bill-period table and accuracy policy. Rule/provenance and numeric fields
+   must match; `calc.js` may retain engine-only/derived fields that rates.json
+   intentionally does not carry.
+4. **Bump the release markers** in both files' `meta`: `version` (semver;
+   tariff data refresh = patch or minor per judgment, engine behavior change =
+   minor), `updated` (`YYYY-MM`, calc.js), and `reviewedThrough` (the actual
+   verification date, rates.json and calc.js). Refresh `meta.asOf` if the
+   summary prose is now stale. If ConEd's *terms* (not numbers) changed, quote
+   the new wording in the `lockIn`/`solar`/`smartChargeConflict` notes in
+   **both** files.
 5. **Run the gate and the suite:** `scripts/definition-of-done.sh` —
-   self-test, gate, `node test/test.js`, `node verify.js`. Green only, and
-   read the warnings: a stale-data or numeric-divergence warning at this point
-   means step 2–3 was incomplete. This is a rehearsal, not the enforcement —
-   the pipeline re-runs the identical script as the deploy's build step
-   (step 7).
+   self-test, gate, strict mirror check, tariff-refresh regression, bill
+   reconstruction suite, and `node verify.js`. Green only, and read the
+   warnings. This is a rehearsal, not the enforcement — the pipeline re-runs
+   the identical script as the deploy's build step (step 7).
 6. **Commit both files in one commit** (plus any doc/test updates the change
    requires), message naming the source and snapshot date, e.g.
    `feat(rates): 2026 published SC1 averages (historical-averages PDF archived 2026-07-14)`.

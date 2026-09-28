@@ -1,6 +1,7 @@
 {
   "_comment": "ConEd SC1 residential rates. Edit + redeploy to update the tool with no code change. app.js fetches this and overrides the defaults baked into calc.js. Cents are expressed as $/kWh; demand rates are $/kW. Each plan also carries display metadata (name, basis, eligibility, ratesAsOf, source) and its published eligibility/lock-in rules (requires, lockIn, solar, smartChargeConflict) that the eligibility engine and plan-by-plan comparison surface.",
   "meta": {
+    "version": "1.10.0",
     "asOf": "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
     "reviewedThrough": "2026-07-01",
     "switchTiming": "A rate switch takes effect with a future meter read — typically your next bill or the one after (1–2 billing cycles)."

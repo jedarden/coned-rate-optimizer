@@ -8,8 +8,8 @@
 # ESPI Data Custodian driving the real gbc.js and Pages Function), and the
 # production-binding smoke-check contract (with fake responses, so no live
 # credential or endpoint is needed), the provisioning script's shell syntax,
-# and the verify script (which applies rates.json on top of the calc.js
-# defaults and cross-checks for rate drift).
+# strict rates.json/calc.js mirror check, and the verify script (which applies
+# rates.json on top of the calc.js defaults and reports any rate drift).
 #
 # Flags such as --fast are accepted and ignored: the suite runs in well under
 # a second, so there is no faster variant to select.
@@ -17,6 +17,8 @@ set -e
 cd "$(dirname "$0")/.."
 node scripts/validate-rates.js --self-test
 node scripts/validate-rates.js
+node scripts/check-rate-drift.js
+node test/tariff-refresh.js
 node test/test.js
 node test/analytics-privacy.js
 node test/gbc-sandbox.js
