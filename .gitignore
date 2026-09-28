@@ -3,6 +3,9 @@
 /DEPLOY.md
 node_modules/
 .wrangler/
+audit-corpus/
+audit-results/
+certification-artifacts/
 .DS_Store
 
 # NEEDLE execution traces are local diagnostics.

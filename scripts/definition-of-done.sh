@@ -23,6 +23,8 @@ node test/tariff-refresh.js
 node test/test.js
 node test/monitoring-retention.js
 node test/checkout.js
+node test/backtest-harness.js
+node test/certification-workflow.js
 node test/analytics-privacy.js
 node test/gbc-sandbox.js
 bash -n scripts/provision-gbc-bindings.sh

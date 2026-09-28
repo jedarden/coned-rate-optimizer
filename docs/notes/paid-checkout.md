@@ -45,3 +45,6 @@ The client-side policy flags and server-side bindings are intentionally both
 required. Missing or failed checkout returns to the free result; cancellation
 does not count as a failed payment attempt, while provider failures use the
 bounded retry state machine in `public/calc.js`.
+
+The evidence, review, two-person enablement, and rollback process for these
+independent flags is [`certification-enablement.md`](certification-enablement.md).

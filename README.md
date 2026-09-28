@@ -24,7 +24,10 @@ payment provider are both certified; the free result is never blocked by that
 checkout state. When enabled, the hosted Stripe Checkout receives only the
 fixed report product and amount — usage and billing data remain in the browser.
 The provider handoff and return-session verification are documented in
-[`docs/notes/paid-checkout.md`](docs/notes/paid-checkout.md).
+[`docs/notes/paid-checkout.md`](docs/notes/paid-checkout.md). The exact
+accuracy artifact, provider certification checks, and controlled flag
+enablement/rollback process are in
+[`docs/notes/certification-enablement.md`](docs/notes/certification-enablement.md).
 
 **Privacy note:** Your interval and billing data are parsed, analyzed, and charted entirely in your browser. The file-import path makes no application-server data request and never uploads the file, usage readings, or billing data; the Green Button Connect path pulls feeds from ConEd straight into your tab and never sends them through this site's application server. The connect path's only analysis-server step is the one-time OAuth code→token exchange at `/api/gbc/token`, and `test/gbc-sandbox.js` enforces that boundary mechanically: it records every request its sandbox receives and fails the run if an exchange body is anything but `{ code, redirectUri }`, if the access token ever appears in a request body, or if any interval/billing payload bytes ever arrive inside one. When paid checkout is enabled, the separate payment path sends only the fixed product and policy version to the hosted provider; it never sends usage or billing data. Separately, the site intentionally uses Cloudflare Web Analytics (cookie-less, privacy-safe) to measure visit traffic and the funnel (sample button clicks, successful parses, parse errors). Anonymous pageview and parse events may reach Cloudflare, but each event is a bare static name: `test/analytics-privacy.js` proves that no interval data, billing data, account identifiers, tokens, filenames, or raw file content can ride along. Full boundary: [`docs/notes/gbc-data-boundary.md`](docs/notes/gbc-data-boundary.md) · paid checkout: [`docs/notes/paid-checkout.md`](docs/notes/paid-checkout.md) · analytics contract: [`docs/notes/analytics-privacy.md`](docs/notes/analytics-privacy.md).
 
