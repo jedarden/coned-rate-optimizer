@@ -5,8 +5,10 @@
    consistency, effective-period coverage, freshness of meta.reviewedThrough
    and of each plan's own ratesAsOf against its source's re-verification
    cadence — read from the workflow doc's §2 source table at run time, so gate
-   and doc cannot drift — plus the paid-conversion `pricing` policy's shape)
-   and its mirror discipline against the defaults baked into public/calc.js.
+   and doc cannot drift — the standard↔bill-history shared-publication
+   coupling that keeps the pair reviewed together, plus the paid-conversion
+   `pricing` policy's shape) and its mirror discipline against the defaults
+   baked into public/calc.js.
 
    Usage:
      node scripts/validate-rates.js              # the gate — exits 1 on any error
@@ -393,6 +395,33 @@ function validate(rates, calcRates, opts) {
            `${last.year} average and reconstructBill flags it "projected" (ConEd publishes on a lag; keep the ` +
            `meta caveat that says so)`);
     }
+
+    // One publication, two sections (docs/tariff-update-workflow.md §2): the
+    // standard averages and the bill-period history are reviewed together. The
+    // tie checks above enforce the numbers moving as one; this enforces the
+    // source linkage that makes the shared review anchor actually cover the
+    // history — standard.ratesAsOf is the only verification date the pair
+    // carries, and it is cadence-checked against the publication standard
+    // names, so a history repointed at a different publication would be
+    // "reviewed" by a publication it didn't come from.
+    const stdSource = rates.standard && isHttps(rates.standard.source) ? normalizeUrl(rates.standard.source) : null;
+    if (stdSource && isHttps(bill.source) && normalizeUrl(bill.source) !== stdSource) {
+      err(`bill.source: names a different publication than standard.source — the standard averages and the ` +
+          `bill-period history come from one ConEd publication (docs/tariff-update-workflow.md §2) and are ` +
+          `reviewed together: repoint both sources, re-verify, and re-tie the latest period in the same change`);
+    }
+
+    // Stale-history coverage: the annual refresh (§4) appends the newly
+    // published year and re-ties standard.*. A latest period one year behind
+    // the current year is the published-on-a-lag norm (warned above); two or
+    // more behind means at least two annual refreshes have passed without the
+    // history gaining a year — the reconstruction is then pricing real bills
+    // at component rates several years out of date.
+    if (Number.isInteger(last && last.year) && last.year <= now.getUTCFullYear() - 2) {
+      warn(`bill.periods: the latest published period is ${now.getUTCFullYear() - last.year} years old (${last.year}) — ` +
+           `the history has missed at least two annual refreshes; re-run the §4 annual refresh against a fresh ` +
+           `snapshot, append the published year, and re-tie standard.*`);
+    }
     if (typeof bill.basis !== "string" || !bill.basis) err("bill.basis: required description of the publication");
     if (!isHttps(bill.source)) err("bill.source: required https URL");
   }
@@ -585,6 +614,23 @@ function selfTest() {
   mutant("non-https source", /standard\.source: required https/, (m) => { m.standard.source = "http://example.com/rates"; });
   mutant("bill periods out of order", /strictly increasing by year/, (m) => { m.bill.periods.reverse(); });
   mutant("bill period missing a component", /bill\.periods\[2\].*mac: required/, (m) => { delete m.bill.periods[2].mac; });
+
+  // One publication, two sections (§2): repointing the bill history's source
+  // away from the standard averages' publication fails the gate — the pair is
+  // reviewed together, and standard's cadence-checked ratesAsOf is the only
+  // review anchor the history has.
+  mutant("bill history sourced from a different publication", /bill\.source: names a different publication/,
+         (m) => { m.bill.source = "https://www.coned.com/en/accounts-billing/your-bill/time-of-use"; });
+
+  // Stale-history coverage: a latest published year ≥ 2 years behind the
+  // current year warns without failing (values are untouched, so the tie to
+  // standard.allIn still holds — only the coverage age is wrong).
+  const staleHistory = clone(base);
+  staleHistory.bill.periods.forEach((p) => { p.year -= 3; });
+  const shOut = validate(staleHistory, calc.RATES, vopts());
+  check("a bill history ≥ 2 years behind the current year warns without failing",
+        shOut.errors.length === 0 &&
+        shOut.warnings.some((w) => /bill\.periods: the latest published period is \d+ years old/.test(w)));
   mutant("accuracy gate fraction > 1", /gateFraction: required fraction/, (m) => { m.accuracy.gateFraction = 1.5; });
   mutant("missing reviewedThrough", /meta\.reviewedThrough: must be an ISO date/, (m) => { delete m.meta.reviewedThrough; });
   mutant("stale reviewedThrough fails the gate", /rate data is 7 months old/,

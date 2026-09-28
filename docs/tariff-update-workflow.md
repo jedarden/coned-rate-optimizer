@@ -52,7 +52,7 @@ nothing else is a valid source for a number:
 
 | Publication | Feeds | Cadence |
 |---|---|---|
-| [Historical Average Full Service Electric Rates PDF](https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf) (NYC Residential SC 1) | `standard.*` (latest year's average, grossed up for GRT + sales tax) and `bill.periods[]` (the per-year component history). **One publication, two sections — they move together** (gate-enforced). | Annual (published on a lag; 2026 averages arrived mid-2026 for the 2025 year) |
+| [Historical Average Full Service Electric Rates PDF](https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf) (NYC Residential SC 1) | `standard.*` (latest year's average, grossed up for GRT + sales tax) and `bill.periods[]` (the per-year component history). **One publication, two sections — they move together** (gate-enforced: `bill.source` must name this same publication as `standard.source`, and the latest period ties to `standard.*`). | Annual (published on a lag; 2026 averages arrived mid-2026 for the 2025 year) |
 | [Time-of-Use page](https://www.coned.com/en/accounts-billing/your-bill/time-of-use) | `tou.offPeak` / `peakSummer` / `peakWinter` (residential TOU supply), `tou.gross`, `tou.customer`, the TOU lock-in terms | Checked at least quarterly |
 | [Steady Use Rate page](https://www.coned.com/en/accounts-billing/steady-use-rate) | `steadyUse.demand.*` ($/kW delivery), `customer`, lock-in terms, solar caution | Checked at least quarterly |
 | [Smart Energy Plan page](https://www.coned.com/en/accounts-billing/smart-energy-plan) | `smartEnergy.demand.*`, `customer`, lock-in terms, solar guidance | Checked at least quarterly |
@@ -141,7 +141,7 @@ Plan-specific rate fields:
 
 | Field | Meaning |
 |---|---|
-| `basis`, `source` | The publication the history comes from (same PDF as `standard`). |
+| `basis`, `source` | The publication the history comes from — the same PDF as `standard`, and the gate fails if `bill.source` and `standard.source` name different publications (one publication, two sections: §2). The pair carries no separate verification date; `standard.ratesAsOf` is its shared review anchor. |
 | `periods[]` | One entry per published billing year, **strictly increasing by year**: `{ year, delivery, commodity, mac, rdm, surcharges }` ($/kWh; `rdm` may be negative — it was in 2023). |
 
 ### `accuracy`
@@ -202,7 +202,12 @@ Tariff time is handled at four distinct layers; do not blur them:
    usage priced at 2025 rates" works today, and the first `meta` caveat says
    so. Gaps are allowed (2023→2025 with 2024 missing is valid, if unfortunate);
    years must increase; the latest period must tie to `standard.*` because
-   they are the same publication (gate-enforced).
+   they are the same publication (gate-enforced, together with the source
+   identity: `bill.source` must name the same publication `standard.source`
+   does — §3 `bill`). The pair is reviewed as one: `standard.ratesAsOf` is
+   the review anchor for both, and a latest period ≥ 2 years behind the
+   current year warns that the annual refresh has lapsed past the
+   published-on-a-lag norm.
 4. **Seasonality** — *which months are summer* is engine config
    (`summerMonths = [6,7,8,9]` in calc.js, matching ConEd's Jun–Sep TOU
    season); *what each season costs* is data (`peakSummer`/`peakWinter` on TOU
@@ -259,6 +264,8 @@ pass; the validator testing itself, shipped with itself).
 - Cross-field: `standard.allIn` more than 0.05 $/kWh away from
   `delivery + commodity` (only MAC/RDM/surcharges may sit between); latest
   `bill.periods` year not tying to `standard.allIn`/`commodity` (±0.001);
+  `bill.source` naming a different publication than `standard.source` (one
+  publication, two sections — §2 — so the pair shares one review anchor);
   `accuracy.passPct ≥ warnPct` or `gateFraction` outside (0, 1].
 - `pricing` policy shape (§3): missing section; `policyVersion` not a positive
   integer; a band fraction outside (0, 1); missing `threshold`,
@@ -277,7 +284,10 @@ pass; the validator testing itself, shipped with itself).
   the mid-quarter reminder that the §2 sweep is coming due; no `bill.periods`
   entry for the current year (current-year usage is being priced `projected` —
   ConEd publishes on a lag, so this is normal most of the year, but it must be
-  seen and the caveat kept, not slept through).
+  seen and the caveat kept, not slept through); a latest `bill.periods` year
+  ≥ 2 years behind the current year (the published history has missed at
+  least two annual refreshes — beyond the normal publication lag, the
+  reconstruction is pricing real bills at years-old component rates).
 - **Numeric divergence** between rates.json and calc.js defaults — plan
   numerics and `pricing` policy terms alike (the override path working —
   flagged so both sides get mirrored in the same release).
@@ -297,6 +307,8 @@ UI banner is what a user sees if something ships stale anyway.
 |---|---|---|
 | Missing plan / field / bad units / broken consistency | `validate-rates.js` errors | pre-deploy gate |
 | Latest published year not reflected in both `standard.*` and `bill.periods` | gate tie check | pre-deploy gate |
+| `bill.source` repointed away from `standard.source` | gate source-identity error | pre-deploy gate |
+| Published history ≥ 2 years stale (no new period in 2+ annual refreshes) | gate freshness warning | gate |
 | Stale verification (> 6 months) | gate error; `checkStaleness()` banner | gate, then UI |
 | A quarterly page's verification lapses past its §2 cadence (95 days) | gate per-source cadence error | pre-deploy gate |
 | Annual PDF unverified past 13 months | gate per-source cadence error | pre-deploy gate |
