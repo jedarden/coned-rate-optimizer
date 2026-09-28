@@ -51,14 +51,17 @@ monthly buckets), account/usage-point identifiers, the access token, the
 authorization code, anything from the demo sample (analyzed, never stored).
 
 The series also keeps a small **recheck baseline**: the last recommendation,
-the published-rate fingerprint/version, and fingerprints of the retained usage
-and declared profile. It contains no additional raw usage. On a later visit,
-after a tariff refresh, or after a new import, the browser compares the new
-analysis with that baseline. An alert is rendered only when the decision
-changes; it names the old and new recommendation and says whether the trigger
-was updated rates, new/revised usage, or changed eligibility facts. An import or
-rate refresh that leaves the recommendation unchanged updates the local
-baseline silently.
+the published-rate fingerprint plus its version/review date, and fingerprints
+of the retained usage and declared profile. It contains no additional raw
+usage. On a later visit, after a tariff refresh, or after a new import, the
+browser compares the new analysis with that baseline and persists the new
+baseline after rendering it. An alert is rendered when the decision changes;
+it names the old and new recommendation and says whether the trigger was
+updated rates, new/revised usage, or changed eligibility facts. If an input
+changed but the decision did not, the Monitoring section shows a non-alerting
+"rechecked" notice with the reason and current recommendation. Persisting the
+baseline makes that notice/alert a one-time explanation rather than repeating
+it on every revisit.
 
 ## Retention window
 
@@ -78,8 +81,11 @@ Loading the page restores the series and re-runs the whole analysis over it at
 the **current published rates** (strategy: *rerun the recommendation after rate
 or load changes*) and re-checks the retained bill evidence through the accuracy
 gate. If that recheck changes the decision, the Monitoring section explains
-what moved and why. A revisit is the landing view — it renders without
-scrolling the page.
+what moved and why; if the tariff release changed but the decision did not, it
+names the release and says the recommendation remains unchanged. The stale-rate
+banner is evaluated against the baked-in fallback before the network override
+loads, so a failed `rates.json` fetch cannot hide stale results. A revisit is
+the landing view — it renders without scrolling the page.
 
 ## Deletion
 

@@ -316,6 +316,41 @@ The test suite asserts the rule mirroring (tests 10 & 13) plus the focused
 tariff-refresh contract. The UI banner is what a user sees if something ships
 stale anyway.
 
+### Recommendation recheck after a tariff release
+
+The browser's monitoring baseline is the hand-off between a published tariff
+release and a customer's saved result. It stores only the last derived
+recommendation, a deterministic fingerprint of `C.RATES`, the release
+`version`/`asOf`/`reviewedThrough`, and fingerprints of the retained monthly
+usage and eligibility profile. It never stores the tariff document twice, raw
+intervals, credentials, or account identifiers.
+
+The recheck sequence is deterministic and runs locally:
+
+1. Analyze the retained usage with the current baked-in rates. Restore and
+   persist the baseline even before `rates.json` is fetched, so a failed
+   network fetch cannot leave a stale comparison loop.
+2. Fetch `rates.json` with `cache: "no-store"`, apply it, and analyze the same
+   retained usage again. The fingerprint catches numeric, term, or provenance
+   changes even if someone forgot to bump the version; the release metadata
+   makes a legitimate version transition readable to support and the user.
+3. Compare the new decision with the stored decision. A decision change shows
+   an alert naming the old and new recommendation and whether rates, usage, or
+   eligibility caused it. An input or tariff change that leaves the decision
+   intact shows a quieter "result was rechecked" notice with the release
+   reason and current recommendation — it is not silently presented as the old
+   result.
+4. Persist the new baseline after each recheck. This makes the explanation
+   one-time, while still making a later release or revised import eligible for
+   a fresh comparison.
+
+Staleness is a separate claim from change detection: when `reviewedThrough` is
+six months old or cannot be verified, the result is visibly labeled
+directional. A tariff refresh therefore has two independent user-facing
+outcomes: freshness tells the user whether the source review is current, and
+the recheck notice/alert tells the user whether this calculation was run on a
+different published release and whether the recommendation moved.
+
 | Failure mode | Detected by | When |
 |---|---|---|
 | Missing plan / field / bad units / broken consistency | `validate-rates.js` errors | pre-deploy gate |

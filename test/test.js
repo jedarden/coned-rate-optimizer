@@ -1795,6 +1795,27 @@ try {
     "new usage that does not change the recommendation produces no alert");
   steady.recheck = stillStay.state;
 
+  // A published release can change prices or provenance without moving the
+  // switch/stay boundary. It still gets a visible, non-alerting notice and
+  // retains the old/new release identity for support and bug reports.
+  const priorVersion = calc.RATES.meta.version;
+  calc.RATES.meta.version = "1.10.1";
+  const sameDecisionRate = mon.recheck(steady, analyzeSeries(steady), { trigger: "rates", now: 25 });
+  assert(sameDecisionRate.changed === false && sameDecisionRate.rateChanged === true &&
+         sameDecisionRate.alert === null && sameDecisionRate.notice &&
+         sameDecisionRate.notice.reasonCodes.includes("rates"),
+    "a rate refresh that leaves the decision unchanged is identified without an alert");
+  assert(sameDecisionRate.rateChange.previous.version === priorVersion &&
+         sameDecisionRate.rateChange.current.version === "1.10.1" &&
+         sameDecisionRate.notice.message.includes("1.10.1"),
+    "the unchanged result names both tariff releases");
+  steady.recheck = sameDecisionRate.state;
+  const revisit = mon.recheck(steady, analyzeSeries(steady), { trigger: "revisit", now: 26 });
+  assert(revisit.changed === false && revisit.rateChanged === false && revisit.notice === null,
+    "persisting the recheck baseline prevents the same release from alerting again on revisit");
+  steady.recheck = revisit.state;
+  calc.RATES.meta.version = priorVersion;
+
   // A newly imported off-peak load shape crosses from stay to switch and names usage.
   steady = mon.ingest(steady, { source: "file", importedAt: 3,
     months: [bucket(400, 10)], profile: { currentPlan: "standard" } });

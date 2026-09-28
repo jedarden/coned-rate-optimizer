@@ -105,6 +105,28 @@
     return stable(rates || C.RATES);
   }
 
+  // Keep the small, user-readable part of the release identity beside the
+  // opaque fingerprint. The fingerprint catches a number or term changing
+  // without a version bump; this metadata lets the UI explain a legitimate
+  // release change without retaining the tariff document twice.
+  function rateRelease(rates) {
+    var meta = (rates || calc().RATES || {}).meta || {};
+    return {
+      version: meta.version || null,
+      asOf: meta.asOf || null,
+      reviewedThrough: meta.reviewedThrough || null
+    };
+  }
+
+  function priorRateRelease(previousState) {
+    if (previousState && previousState.rateRelease) return previousState.rateRelease;
+    return {
+      version: previousState && previousState.rateVersion || null,
+      asOf: previousState && previousState.ratesAsOf || null,
+      reviewedThrough: previousState && previousState.reviewedThrough || null
+    };
+  }
+
   function usageFingerprint(series) {
     var months = ((series && series.months) || []).map(function (m) {
       return { ym: m.ym, total: m.total, peak: m.peak, off: m.off,
@@ -175,9 +197,9 @@
 
   // Compare a newly analyzed result with the last locally recorded result. The
   // returned state is immutable; callers save it only after the calculation and
-  // may display alert when changed is true. A changed recommendation is the only
-  // condition that produces an alert — ordinary tariff revisions or imports that
-  // leave the decision intact stay quiet.
+  // may display alert when changed is true. A changed recommendation produces an
+  // alert; an input change that leaves the decision intact produces a quieter
+  // notice so the user can tell that the displayed result was rechecked.
   function recheck(series, analysis, options) {
     options = options || {};
     var C = calc();
@@ -185,20 +207,24 @@
     var previous = previousState && previousState.recommendation;
     var current = recommendationSnapshot(analysis);
     var rates = C.RATES || {};
+    var currentRateRelease = rateRelease(rates);
     var state = {
       version: 1,
       recommendation: current,
       usageFingerprint: usageFingerprint(series),
       profileFingerprint: profileFingerprint(analysis && analysis.profile),
       rateFingerprint: rateFingerprint(rates),
-      rateVersion: rates.meta && rates.meta.version || null,
-      ratesAsOf: rates.meta && rates.meta.asOf || null,
+      rateVersion: currentRateRelease.version,
+      ratesAsOf: currentRateRelease.asOf,
+      reviewedThrough: currentRateRelease.reviewedThrough,
+      rateRelease: currentRateRelease,
       checkedAt: options.now || Date.now(),
       trigger: options.trigger || "recheck"
     };
     if (!previous) {
       return { changed: false, initialized: true, alert: null, previous: null,
-        current: current, state: state, rateChanged: false, usageChanged: false, profileChanged: false };
+        current: current, state: state, notice: null, rateChanged: false,
+        usageChanged: false, profileChanged: false };
     }
 
     var rateChanged = previousState.rateFingerprint !== state.rateFingerprint;
@@ -207,9 +233,13 @@
     var recommendationChanged = previous.decision !== current.decision;
     var reasons = [];
     if (rateChanged) {
-      var oldVersion = previousState.rateVersion || "the previous version";
-      var newVersion = state.rateVersion || "the current version";
-      reasons.push({ code: "rates", text: "Published rate data changed (" + oldVersion + " → " + newVersion + ")." });
+      var oldRelease = priorRateRelease(previousState);
+      var oldVersion = oldRelease.version || "the previous release";
+      var newVersion = state.rateVersion || "the current release";
+      var releaseText = oldVersion === newVersion
+        ? "Published rate data changed within release " + newVersion + "."
+        : "Published rate release changed (" + oldVersion + " → " + newVersion + ").";
+      reasons.push({ code: "rates", text: releaseText });
     }
     if (usageChanged) reasons.push({ code: "usage", text: "New or revised usage data changed the load profile." });
     if (profileChanged) reasons.push({ code: "profile", text: "Your declared account or eligibility details changed." });
@@ -218,6 +248,7 @@
     }
     var changed = recommendationChanged;
     var alert = null;
+    var notice = null;
     if (changed) {
       alert = {
         title: "Your rate recommendation changed",
@@ -226,10 +257,20 @@
         reasons: reasons.map(function (r) { return r.text; }),
         reasonCodes: reasons.map(function (r) { return r.code; })
       };
+    } else if (reasons.length) {
+      notice = {
+        title: "Your rate result was rechecked",
+        message: reasons.map(function (r) { return r.text; }).join(" ") +
+          " Your recommendation remains: " + current.recommendation + ".",
+        reasons: reasons.map(function (r) { return r.text; }),
+        reasonCodes: reasons.map(function (r) { return r.code; })
+      };
     }
     return { changed: changed, initialized: false, alert: alert, previous: previous,
-      current: current, state: state, reasons: reasons, rateChanged: rateChanged,
-      usageChanged: usageChanged, profileChanged: profileChanged };
+      current: current, state: state, notice: notice, reasons: reasons,
+      rateChanged: rateChanged, rateChange: rateChanged ? {
+        previous: priorRateRelease(previousState), current: currentRateRelease
+      } : null, usageChanged: usageChanged, profileChanged: profileChanged };
   }
 
   // One import (a file the user dropped or a Share My Data pull) merged into the
@@ -507,7 +548,8 @@
   var api = { KEY: KEY, SCHEMA: SCHEMA, RETENTION_MONTHS: RETENTION_MONTHS,
               blank: blank, ingest: ingest, planFor: planFor, segments: segments,
               restoreParsed: restoreParsed, stitch: stitch, realized: realized,
-              rateFingerprint: rateFingerprint, recommendationSnapshot: recommendationSnapshot,
+              rateFingerprint: rateFingerprint, rateRelease: rateRelease,
+              recommendationSnapshot: recommendationSnapshot,
               recheck: recheck,
               save: save, load: load, clear: clear };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

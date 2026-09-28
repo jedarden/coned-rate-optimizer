@@ -263,6 +263,14 @@
         '<p>' + html(recheck.alert.message) + '</p>' +
         '<ul>' + recheck.alert.reasons.map(function (reason) { return '<li>' + html(reason) + '</li>'; }).join("") + '</ul>' +
         '</aside>');
+    } else if (recheck && recheck.notice) {
+      // A tariff refresh can change displayed costs without changing the
+      // switch/stay decision. Keep that provenance visible so a user cannot
+      // mistake a freshly recomputed result for the old result.
+      parts.push('<aside class="recheck-status" id="monitor-recheck-status" role="status" aria-live="polite">' +
+        '<strong>' + html(recheck.notice.title) + '</strong>' +
+        '<p>' + html(recheck.notice.message) + '</p>' +
+        '</aside>');
     }
 
     // The cumulative answer, with its evidence class stated — "verified" is a
@@ -754,9 +762,14 @@
 
   // Check if rates are stale (at or beyond 6 months since reviewedThrough)
   function checkStaleness() {
-    if (!C.RATES.meta.reviewedThrough) return null;
+    if (!C.RATES.meta.reviewedThrough || !/^\d{4}-\d{2}-\d{2}$/.test(C.RATES.meta.reviewedThrough)) {
+      return '<p class="legend staleness">⚠️ Rate freshness could not be verified — treat this result as directional.</p>';
+    }
     var reviewed = new Date(C.RATES.meta.reviewedThrough);
     var now = new Date();
+    if (isNaN(reviewed.getTime())) {
+      return '<p class="legend staleness">⚠️ Rate freshness could not be verified — treat this result as directional.</p>';
+    }
     // Ignore time component; compare dates only
     reviewed.setHours(0, 0, 0, 0);
     now.setHours(0, 0, 0, 0);
@@ -770,6 +783,9 @@
   }
 
   showVer();
+  // Check the baked-in fallback before restoring monitoring history. If the
+  // no-store rates.json fetch fails, stale data must still be identified.
+  stalenessWarning = checkStaleness();
 
   // Restore the retained series on load — monitoring is the page's memory. A
   // revisit re-prices every retained month at the current published rates
@@ -794,7 +810,7 @@
         (storedSeries.lastImportedAt ? "last updated " + new Date(storedSeries.lastImportedAt).toLocaleDateString() : "imports merged locally");
       var restoredAnalysis = C.analyze(lastParsed, calcOptions());
       render(restoredAnalysis, lastLabel, { noScroll: true,
-        recheck: M.recheck(series, restoredAnalysis, { trigger: "revisit" }) });
+        recheck: recordRecheck(restoredAnalysis, "revisit") });
     }
   }
 
