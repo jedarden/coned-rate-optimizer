@@ -47,6 +47,16 @@ straight to your browser. A passive observer of this endpoint learns, at most,
 "someone connected" — never any usage data, and never a reusable credential
 (codes are single-use; the token goes only to your own tab over TLS).
 
+This is asserted, not just stated: the sandbox harness (`test/gbc-sandbox.js`,
+section 9) records **every request** its stand-in server receives across the
+whole run and fails if any POST goes anywhere but the exchange and its upstream
+call, if an exchange body is anything but `{code, redirectUri}`, if the access
+token appears in any request body, or if any interval/billing payload bytes
+(`IntervalReading`, `IntervalBlock`, `UsageSummary`, `powerOfTenMultiplier`)
+ever arrive inside one. Feed payloads exist only in the responses the Data
+Custodian sends, never in anything received — and every Data Custodian request
+must be a direct GET, i.e. browser-to-ConEd with no application-server relay.
+
 ### One deployment dependency the E2E caught: Data Custodian CORS
 
 Because the browser pulls the ESPI feeds **directly from ConEd** (no relay),

@@ -383,8 +383,10 @@ change.
 - **No scraping.** ConEd blocks it and a silent scrape could publish numbers
   no human has seen. Updates are human/agent-verified against an archived
   publication, every time.
-- **No server-side tariff store.** The tool is 100% client-side by design
-  (README); rates.json ships as a static file. Versioned effective-date rate
+- **No server-side tariff store.** The tool is client-side by design
+  (README; the one Green Button Connect server touchpoint is the OAuth code
+  exchange, per `docs/notes/gbc-data-boundary.md`); rates.json ships as a
+  static file. Versioned effective-date rate
   data in a database is a Phase-2 paid-product need (`docs/product-strategy.md`,
   technical gap #1) — until then this file *is* the versioned store, and git
   history is its audit trail.

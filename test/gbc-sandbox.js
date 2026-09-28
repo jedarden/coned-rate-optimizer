@@ -16,6 +16,12 @@
    Function functions/api/gbc/token.js (invoked with Request/env objects, its
    /api/gbc/token route delegated to verbatim).
 
+   The sandbox also enforces the data-handling boundary mechanically
+   (docs/notes/gbc-data-boundary.md): every request it receives is recorded,
+   and the run fails if anything other than the OAuth code shapes ever arrives
+   in a request body — interval and billing payloads exist only in the
+   responses the Data Custodian sends, never in anything received.
+
    Exports startSandbox() for the browser end-to-end (tools/verify-gbc-browser.js). */
 "use strict";
 const http = require("http");
@@ -31,6 +37,7 @@ const SUB_ID = "77";
 const UP_ID = "9";
 
 const readBody = (req) => new Promise((resolve, reject) => {
+  if (req.rawBody !== undefined) return resolve(req.rawBody);
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
@@ -83,10 +90,26 @@ function startSandbox(options) {
   const accessToken = options.accessToken || "sbx_" + crypto.randomBytes(12).toString("hex");
   const fixtureXml = fs.readFileSync(FIXTURE, "utf8");
   const codes = new Map(); // authorization code → {redirectUri, used}
+  // Every request the sandbox receives — method, full URL, and any POST body.
+  // One host plays both the app-origin role (static + /api/gbc/token) and the
+  // ConEd role (/authorize, /token, /espi/*), so the boundary assertions in
+  // run() key on where a request went and what bytes it carried, not on host.
+  const requests = [];
   const server = http.createServer((req, res) => {
-    handler(req, res).catch((e) => {
+    const dispatch = () => handler(req, res).catch((e) => {
       send(res, 500, jsonText({ error: "sandbox_error", error_description: String(e && e.message) }));
     });
+    const url = req.url || "";
+    if (req.method === "POST") {
+      readBody(req).then((body) => {
+        req.rawBody = body;
+        requests.push({ method: req.method, url, body });
+        dispatch();
+      }, dispatch);
+    } else {
+      requests.push({ method: req.method, url });
+      dispatch();
+    }
   });
 
   async function handler(req, res) {
@@ -192,6 +215,7 @@ function startSandbox(options) {
         clientSecret,
         accessToken,
         fixtureXml,
+        requests,
         stop: () => new Promise((done) => server.close(done))
       });
     });
@@ -335,6 +359,33 @@ async function run() {
     env: { GBC_CLIENT_ID: box.clientId, GBC_CLIENT_SECRET: box.clientSecret, GBC_TOKEN_URL: box.origin + "/token", GBC_TOKEN_AUTH: "body" }
   });
   ok(bodyAuth.status === 400, "body-style client auth reaches the token endpoint (bogus code → upstream 400 passthrough)");
+
+  console.log("\n9. Data boundary — no usage payload ever reaches the application server");
+  // Across the WHOLE run above: one host plays both the app origin and ConEd,
+  // so the invariant is stated on requests, not hosts. Usage bytes may only
+  // ever leave this server as Data Custodian *responses* — they must never
+  // arrive inside any request body (docs/notes/gbc-data-boundary.md).
+  const pathOf = (r) => r.url.split("?")[0];
+  const posts = box.requests.filter((r) => r.method === "POST");
+  ok(posts.length > 0 && posts.every((r) => ["/api/gbc/token", "/token"].includes(pathOf(r))),
+     `every POST went to the token exchange or its upstream call (${posts.length} POSTs)`);
+  const exchangePosts = posts.filter((r) => pathOf(r) === "/api/gbc/token");
+  const exchangeShape = (r) => {
+    try {
+      const b = JSON.parse(r.body);
+      return Object.keys(b).length === 2 && typeof b.code === "string" && typeof b.redirectUri === "string";
+    } catch (e) { return false; }
+  };
+  ok(exchangePosts.length > 0 && exchangePosts.every(exchangeShape),
+     `every exchange request body was exactly {code, redirectUri} (${exchangePosts.length} attempt(s))`);
+  const usageMarkers = ["IntervalReading", "IntervalBlock", "UsageSummary", "powerOfTenMultiplier"];
+  ok(posts.every((r) => usageMarkers.every((m) => !r.body.includes(m))),
+     "no request body carried interval or billing payload bytes");
+  ok(posts.every((r) => !r.body.includes(box.accessToken)),
+     "the access token never appears in a request body");
+  const espiReqs = box.requests.filter((r) => pathOf(r).startsWith("/espi/"));
+  ok(espiReqs.length > 0 && espiReqs.every((r) => r.method === "GET"),
+     `every Data Custodian request was a direct GET (${espiReqs.length} feed requests)`);
 
   await box.stop();
   console.log(`\nSandbox results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
