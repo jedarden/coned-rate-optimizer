@@ -2,7 +2,7 @@
 # Definition of done for coned-rate-optimizer: the tariff data gate (which
 # self-tests, then validates rates.json — schema, consistency, effective
 # periods, freshness — see docs/tariff-update-workflow.md), the automated
-# calc-core test suite, the analytics privacy contract (event allowlist +
+# calc-core and focused monitoring retention/deletion test suites, the analytics privacy contract (event allowlist +
 # no-payload regression checks — see docs/notes/analytics-privacy.md), the
 # Green Button Connect sandbox Third-Party App authorization (mock OAuth +
 # ESPI Data Custodian driving the real gbc.js and Pages Function), and the
@@ -21,6 +21,7 @@ node scripts/check-rate-drift.js
 node scripts/regenerate-reconstruction-tests.js --check
 node test/tariff-refresh.js
 node test/test.js
+node test/monitoring-retention.js
 node test/checkout.js
 node test/analytics-privacy.js
 node test/gbc-sandbox.js
