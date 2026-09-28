@@ -974,7 +974,7 @@ try {
   };
   for (const fn of ["validateConfig", "loadConfig", "isConfigured", "randomState", "buildRedirectUri",
     "authorizeUrl", "parseCallback", "friendlyError", "exchangeToken", "saveConnection", "loadConnection",
-    "clearConnection", "connectionIsFresh", "apiGet", "extractEntryIds", "connect", "refreshFeeds"]) {
+    "clearConnection", "connectionIsFresh", "apiGet", "apiGetPages", "extractEntryIds", "extractNextLink", "mergeAtomPages", "connect", "refreshFeeds"]) {
     assert(typeof gbc[fn] === "function", `exports ${fn}()`);
   }
 
@@ -1037,6 +1037,10 @@ try {
   const ids = gbc.extractEntryIds(miniFeed);
   assert(ids.length === 2 && gbc.resourceIdOf(ids[0]) === "77",
     "extractEntryIds takes entry ids only (feed id excluded), prefix-tolerant");
+  assert(gbc.extractNextLink('<feed><atom:link rel="next" href="/page-2?x=1&amp;y=2"/></feed>') === "/page-2?x=1&y=2",
+    "extractNextLink accepts prefixed Atom links and decodes href entities");
+  assert(gbc.mergeAtomPages(["<feed><entry><id>a</id></entry></feed>", "<feed><entry><id>b</id></entry></feed>"]).indexOf("<id>b</id>") >= 0,
+    "mergeAtomPages combines page entries into one feed");
   assert(gbc.resourceIdOf("https://api.example/x/UsagePoint/9") === "9", "resourceIdOf takes the last path segment");
   assert(gbc.expandPath("/Subscription/{subscription}/UsagePoint", { subscription: "77" }) === "/Subscription/77/UsagePoint",
     "expandPath substitutes ids into path templates");

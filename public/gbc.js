@@ -202,6 +202,73 @@
     });
   }
 
+  // Atom pagination is a feed concern, not an application-server concern.
+  // Data Custodians may return a relative or absolute rel="next" link; keep
+  // following it in the browser and present the parser one logical feed.
+  function attributeValue(tag, name) {
+    var re = new RegExp("\\b" + name + "\\s*=\\s*([\\\"'])([\\s\\S]*?)\\1", "i");
+    var m = re.exec(tag);
+    return m ? m[2] : "";
+  }
+
+  function decodeXmlEntities(value) {
+    return String(value).replace(/&(?:amp|#38);/g, "&")
+      .replace(/&(?:quot|#34);/g, '\"')
+      .replace(/&(?:apos|#39);/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">");
+  }
+
+  function extractNextLink(atomXml) {
+    var tags = String(atomXml).match(/<(?:[A-Za-z_][\w.-]*:)?link\b[^>]*>/gi) || [];
+    for (var i = 0; i < tags.length; i++) {
+      var rel = attributeValue(tags[i], "rel").toLowerCase().split(/\s+/);
+      if (rel.indexOf("next") >= 0) {
+        var href = attributeValue(tags[i], "href");
+        return href ? decodeXmlEntities(href) : "";
+      }
+    }
+    return null;
+  }
+
+  function atomBody(atomXml) {
+    var xml = String(atomXml);
+    var open = /<(?:[A-Za-z_][\w.-]*:)?feed\b[^>]*>/i.exec(xml);
+    var close = /<\/(?:[A-Za-z_][\w.-]*:)?feed\s*>\s*$/i.exec(xml);
+    if (!open || !close || close.index <= open.index + open[0].length) return xml;
+    return xml.slice(open.index + open[0].length, close.index);
+  }
+
+  function mergeAtomPages(pages) {
+    if (pages.length < 2) return pages[0];
+    var first = String(pages[0]);
+    var open = /<(?:[A-Za-z_][\w.-]*:)?feed\b[^>]*>/i.exec(first);
+    if (!open) return pages.join("\n");
+    var prefix = first.slice(0, open.index + open[0].length);
+    var close = /<\/(?:[A-Za-z_][\w.-]*:)?feed\s*>/i.exec(first);
+    return prefix + pages.map(atomBody).join("\n") + (close ? close[0] : "</feed>");
+  }
+
+  function apiGetPages(token, url, fetchImpl) {
+    var pages = [], seen = {}, nextUrl = String(url), pageCount = 0;
+    function readPage() {
+      if (seen[nextUrl]) throw new Error("ConEd feed pagination loop detected");
+      if (pageCount >= 100) throw new Error("ConEd feed pagination exceeded 100 pages");
+      seen[nextUrl] = true;
+      pageCount++;
+      var pageUrl = nextUrl;
+      return apiGet(token, pageUrl, fetchImpl).then(function (xml) {
+        pages.push(xml);
+        var link = extractNextLink(xml);
+        if (!link) return mergeAtomPages(pages);
+        try { nextUrl = new URL(link, pageUrl).toString(); }
+        catch (e) { throw new Error("ConEd returned an invalid feed pagination link"); }
+        return readPage();
+      });
+    }
+    return readPage();
+  }
+
   // Entry-level <id> elements only (the feed's own <id> is outside <entry>).
   function extractEntryIds(atomXml) {
     var out = [];
@@ -228,7 +295,7 @@
   function fetchSubscriptionId(cfg, conn, fetchImpl) {
     if (conn.subscriptionId) return Promise.resolve(conn.subscriptionId);
     var url = cfg.apiBase.replace(/\/$/, "") + cfg.subscriptionListPath;
-    return apiGet(conn.accessToken, url, fetchImpl).then(function (xml) {
+    return apiGetPages(conn.accessToken, url, fetchImpl).then(function (xml) {
       var ids = extractEntryIds(xml);
       if (!ids.length) throw new Error("ConEd returned no usage subscription — make sure interval data is being shared for this account.");
       return resourceIdOf(ids[0]);
@@ -237,7 +304,7 @@
   function fetchUsagePointId(cfg, conn, subscriptionId, fetchImpl) {
     if (conn.usagePointId) return Promise.resolve(conn.usagePointId);
     var url = cfg.apiBase.replace(/\/$/, "") + expandPath(cfg.usagePointsPath, { subscription: subscriptionId });
-    return apiGet(conn.accessToken, url, fetchImpl).then(function (xml) {
+    return apiGetPages(conn.accessToken, url, fetchImpl).then(function (xml) {
       var ids = extractEntryIds(xml);
       if (!ids.length) throw new Error("ConEd returned no usage point for this subscription.");
       return resourceIdOf(ids[0]);
@@ -245,11 +312,11 @@
   }
   function fetchIntervalFeed(cfg, conn, usagePointId, fetchImpl) {
     var url = cfg.apiBase.replace(/\/$/, "") + expandPath(cfg.intervalFeedPath, { usagePoint: usagePointId });
-    return apiGet(conn.accessToken, url, fetchImpl);
+    return apiGetPages(conn.accessToken, url, fetchImpl);
   }
   function fetchBillingFeed(cfg, conn, usagePointId, fetchImpl) {
     var url = cfg.apiBase.replace(/\/$/, "") + expandPath(cfg.billingFeedPath, { usagePoint: usagePointId });
-    return apiGet(conn.accessToken, url, fetchImpl).then(function (xml) {
+    return apiGetPages(conn.accessToken, url, fetchImpl).then(function (xml) {
       return { xml: xml, entries: extractEntryIds(xml).length };
     });
   }
@@ -340,7 +407,10 @@
     loadState: loadState,
     connectionIsFresh: connectionIsFresh,
     apiGet: apiGet,
+    apiGetPages: apiGetPages,
     extractEntryIds: extractEntryIds,
+    extractNextLink: extractNextLink,
+    mergeAtomPages: mergeAtomPages,
     resourceIdOf: resourceIdOf,
     expandPath: expandPath,
     connect: connect,

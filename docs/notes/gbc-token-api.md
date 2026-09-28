@@ -1,15 +1,15 @@
-# `/api/gbc/token` — API contract
+# Green Button Connect client + `/api/gbc/token` contract
 
-Bead `conedrat-f869d41f` · 2026-09-28
+Bead `conedrat-f869d41f` · client-contract extension `conedrat-c6392ee6` · 2026-09-28
 
-This is the request/response specification for the one server touchpoint in the
-Green Button Connect flow: the OAuth authorization-code → access-token exchange
-([`functions/api/gbc/token.js`](../../functions/api/gbc/token.js)). The *why*
-(client secret can't live in a browser) and the data-handling boundary are in
-[`gbc-data-boundary.md`](gbc-data-boundary.md); this page is the *what* — the
-exact contract, stated tightly enough that a client could be written against it
-— and every rule here has a named assertion in `test/gbc-sandbox.js` (matrix at
-the end).
+This is the complete browser-facing contract for Green Button Connect (Share My
+Data), including the one server touchpoint: the OAuth authorization-code →
+access-token exchange ([`functions/api/gbc/token.js`](../../functions/api/gbc/token.js)).
+The *why* (the client secret cannot live in a browser) and the data-handling
+boundary are in [`gbc-data-boundary.md`](gbc-data-boundary.md); this page is the
+*what*, stated tightly enough that another client could be written against it.
+Each behavior below has a named `GBC-AC-*` acceptance assertion in
+`test/gbc-sandbox.js`.
 
 ## Endpoint
 
@@ -141,14 +141,176 @@ losing information.
 
 ## Client side (what `public/gbc.js` expects)
 
-`exchangeToken()` POSTs `{code, redirectUri}` with `Accept: application/json`,
-then treats **any** of these as failure: non-2xx status, unparseable body, or a
-parsed body without `access_token` — in every case surfacing the body's
-`error_description` / `error` when present, else a generic "HTTP <status>"
-message. On success it builds the in-tab connection
-`{accessToken, tokenType, scope, expiresIn, obtainedAt, expiresAt}` (defaults:
-`Bearer`, 3600 s) and best-effort-saves it to `sessionStorage` under
-`gbc-connection` — the only place the access token ever exists.
+The browser owns authorization, token lifetime, feed retrieval, and parsing.
+It never knows or sends `GBC_CLIENT_SECRET`.
+
+### Public configuration
+
+`public/gbc-config.json` contains only public deployment values:
+
+| Field | Contract |
+|---|---|
+| `configured` | `false` hides/disables the connect panel. `true` requires non-empty `clientId`, `authorizeUrl`, `apiBase`, and at least one scope. |
+| `clientId` | The ConEd-registered third-party client id. |
+| `authorizeUrl` | The OAuth authorization endpoint issued at onboarding. |
+| `apiBase` | The Data Custodian API origin/base URL. |
+| `scopes` | An ordered array of provider scope strings; sent space-separated. |
+| `tokenExchangePath` | Optional; defaults to `/api/gbc/token`. |
+| `subscriptionListPath`, `usagePointsPath`, `intervalFeedPath`, `billingFeedPath` | Optional ESPI path templates; defaults are listed below. |
+
+A missing, 404, or invalid public config degrades to `configured:false`. A
+config that explicitly says `configured:true` but omits a required public field
+is rejected. The client secret and token URL are never public config.
+
+### Authorization URL, scopes, and redirect
+
+The connect button generates `state = randomState()` (128 bits represented as
+32 lowercase hexadecimal characters), saves it in `sessionStorage` as
+`gbc-state`, and navigates the browser to `authorizeUrl(cfg, state, redirectUri)`.
+`buildRedirectUri(location)` returns exactly `location.origin + "/"`; the
+trailing slash is part of the registered value and must match ConEd's app
+registration byte-for-byte.
+
+The authorization URL is a provider URL with these query parameters:
+
+```text
+response_type=code
+client_id=<cfg.clientId>
+redirect_uri=<registered origin + />
+scope=<cfg.scopes joined with one ASCII space>
+state=<fresh randomState()>
+```
+
+The scope array is not inferred, broadened, or silently rewritten. The
+authorization page is a browser link-out; the application never collects a
+ConEd password.
+
+On return, the page consumes `code`, `state`, or OAuth `error` query values.
+`parseCallback()` accepts a code only when the returned state equals the saved
+state. A missing code or mismatched state is rejected locally and never reaches
+the token endpoint. `error` and `error_description` are surfaced as an OAuth
+failure and also never reach the token endpoint. A matching code is one-time
+and is exchanged once with the exact same redirect URI.
+
+Acceptance: `GBC-AC-AUTHORIZATION-URL`, `GBC-AC-SCOPES`, and
+`GBC-AC-REDIRECT-HANDLING`.
+
+
+### Token exchange and expiry
+
+`exchangeToken()` sends the exact JSON body `{code, redirectUri}` to
+`tokenExchangePath`, with `Content-Type: application/json` and
+`Accept: application/json`. It treats a non-2xx response, a non-JSON response,
+or a JSON response without `access_token` as a failure; it prefers
+`error_description`, then `error`, then a generic HTTP-status message.
+
+For a valid response it normalizes the OAuth fields into the in-tab connection
+shape:
+
+```js
+{ accessToken, tokenType, scope, expiresIn, obtainedAt, expiresAt }
+```
+
+`tokenType` defaults to `Bearer`, `scope` to the empty string, and
+`expiresIn` to 3600 seconds when omitted. `expiresAt` is computed from the
+exchange time and `expiresIn`; `connectionIsFresh(conn)` requires a token and
+requires `expiresAt > now + 30 seconds`. A token at or inside that safety
+margin is stale. The connection is best-effort saved only in the current
+tab's `sessionStorage` key `gbc-connection`; a stale saved connection is
+cleared before any Data Custodian request. There is no refresh-token flow: the
+user reconnects when the grant is stale or revoked.
+
+Acceptance: `GBC-AC-TOKEN-EXPIRY`.
+
+### Direct ESPI requests and feed discovery
+
+After exchange, all Data Custodian calls are browser-direct `GET` requests to
+`apiBase` with `Authorization: Bearer <accessToken>` and an XML/Atom `Accept`
+header. Interval and billing payloads never go through `/api/gbc/token` or any
+other application-server endpoint.
+
+The default ESPI 1.1 paths are:
+
+| Request | Default path |
+|---|---|
+| Subscription discovery | `/espi/1_1/resource/Subscription` |
+| Usage-point discovery | `/espi/1_1/resource/Subscription/{subscription}/UsagePoint` |
+| Interval feed | `/espi/1_1/resource/Batch/UsagePoint/{usagePoint}` |
+| Billing feed | `/espi/1_1/resource/UsagePoint/{usagePoint}/UsageSummary` |
+
+The path templates may be overridden by public config because ConEd publishes
+the exact Data Custodian paths at onboarding. The discovery walk is:
+
+1. GET the subscription collection; take the first entry's `<id>` and use its
+   final URI segment as `subscriptionId` (the collection's own `<feed><id>`
+   is not an entry).
+2. GET the usage-point collection for that subscription; take the first
+   entry's final URI segment as `usagePointId`.
+3. GET the interval and billing endpoints for that usage point in parallel.
+
+An empty subscription or usage-point collection is an actionable client error.
+A `401` from any feed becomes "authorization expired — reconnect your account";
+other non-2xx feed responses become an HTTP-status data-request error.
+
+Acceptance: `GBC-AC-FEED-DISCOVERY` and `GBC-AC-DIRECT-ESPI`.
+
+### Pagination
+
+Every collection or data feed may be paginated with an Atom `<link
+rel="next" href="…">`. `refreshFeeds()` follows `rel="next"` for all four
+requests (subscription, usage point, interval, and billing), resolving relative
+links against the page that supplied them and accepting absolute links. It
+merges the page bodies into one logical Atom feed before entry discovery or
+parsing, so an id or interval/bill on a later page is not lost. XML entities in
+the `href` are decoded first.
+
+Pagination is browser-direct and carries the same bearer header on every page.
+The client rejects a repeated URL as a pagination loop and rejects a walk over
+100 pages. A feed without a next link ends the walk. `apiGet()` is the one-page
+primitive; `apiGetPages()` is the paginated primitive used by `refreshFeeds()`.
+
+Acceptance: `GBC-AC-PAGINATION` and `GBC-AC-PAGINATION-GUARD`.
+
+### Normalization into the calculation core
+
+The client does not calculate rates or transform usage into a second schema.
+After the interval pages are merged, their XML is passed unchanged to
+`parseESPI()`, which returns the calculation shape:
+
+```js
+{ months, hours, ndays, intervals, minDate, maxDate }
+```
+
+`months` contains normalized monthly totals/peak/off-peak buckets and observed
+day counts; `hours` contains hourly `kwh` records with local Eastern time
+fields. The connected interval result therefore follows the same analysis path
+as an uploaded ESPI file.
+
+The merged billing XML is passed unchanged to `parseBillingESPI()`, which
+returns `{ bills, incomplete }`. A bill carries normalized start/end epochs,
+`ymdStart`, `ymdEnd`, day count, USD `cost` (the ESPI minor-unit `<cost><value>`
+divided by 100), currency, and a display label. An entry without a usable
+period/total or with a non-USD currency is retained in `incomplete` with a
+reason; it is not silently treated as a valid bill.
+
+`refreshFeeds()` returns `{ parsed, intervalXml, billingXml, billingEntries,
+bills, billingIncomplete, billingError, subscriptionId, usagePointId }`. A
+billing parse failure degrades only the bill evidence (`bills=[]` plus
+`billingError`); an interval parse failure rejects the refresh because there is
+no usable usage profile.
+
+Acceptance: `GBC-AC-NORMALIZE-INTERVAL` and `GBC-AC-NORMALIZE-BILLING`.
+
+### Upstream errors seen by the browser
+
+The token function's local errors and ConEd's OAuth errors are JSON. The client
+surfaces the provider's `error_description`/`error` without attempting a retry.
+A refused or malformed upstream response is a failed exchange; a used, expired,
+or redirect-mismatched code remains a provider `invalid_grant` and must be
+resolved by starting authorization again. Feed `401` and token expiry likewise
+require reconnection; there is no client-side token refresh.
+
+Acceptance: `GBC-AC-UPSTREAM-ERRORS`.
 
 ## What the endpoint never does
 
@@ -168,7 +330,21 @@ Every rule above is asserted in `test/gbc-sandbox.js`, which invokes the real
 Pages Function module with real `Request` objects and a recording mock
 authorization server:
 
-| Contract rule | Sandbox assertion (section 8) |
+| Contract behavior | Named acceptance test |
+|---|---|
+| Browser authorization URL and registered redirect | `GBC-AC-AUTHORIZATION-URL` |
+| Space-joined scopes | `GBC-AC-SCOPES` |
+| Callback code/state/error handling | `GBC-AC-REDIRECT-HANDLING` |
+| OAuth token expiry and 30-second freshness margin | `GBC-AC-TOKEN-EXPIRY` |
+| Subscription → UsagePoint discovery | `GBC-AC-FEED-DISCOVERY` |
+| Direct interval and billing ESPI GETs | `GBC-AC-DIRECT-ESPI` |
+| Relative `rel=next` pagination and merged feeds | `GBC-AC-PAGINATION` |
+| Pagination loop guard | `GBC-AC-PAGINATION-GUARD` |
+| `parseESPI` interval normalization | `GBC-AC-NORMALIZE-INTERVAL` |
+| `parseBillingESPI` bill normalization | `GBC-AC-NORMALIZE-BILLING` |
+| Upstream unreachable/malformed/passthrough errors | `GBC-AC-UPSTREAM-ERRORS` |
+
+| Token endpoint behavior | Sandbox assertion |
 |---|---|
 | Valid exchange end-to-end | fresh single-use code → 200, body carries `access_token`/`token_type`/`expires_in`, `no-store` + JSON headers on the response |
 | 400 bad JSON body | non-JSON body → 400 `invalid_request` |

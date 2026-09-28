@@ -62,6 +62,10 @@ ${entryIds.map((id) => `  <entry>\n    <id>${id}</id>\n  </entry>`).join("\n")}
 </feed>`;
 }
 
+function withNext(feed, href) {
+  return feed.replace("</feed>", "  <link rel=\"next\" href=\"" + href + "\"/>\n</feed>");
+}
+
 function usageSummaryFeed(base) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -192,6 +196,34 @@ function startSandbox(options) {
         return send(res, 401, jsonText({ error: "invalid_token" }), "application/json", cors);
       }
       const base = origin + "/espi/1_1/resource";
+      // The paginated variants deliberately put the next link on every feed
+      // type used by refreshFeeds. The second interval/billing pages are empty
+      // so the shared fixture remains the expected normalization input while
+      // the request walk still proves that pagination was followed.
+      if (u.pathname === "/espi/paged/Subscription") {
+        return send(res, 200, u.searchParams.get("page") === "2"
+          ? atomFeed(base + "/Subscription", [base + "/Subscription/88"])
+          : withNext(atomFeed(base + "/Subscription", [base + "/Subscription/" + SUB_ID]), "?page=2"),
+        "application/atom+xml", cors);
+      }
+      if (u.pathname === "/espi/paged/Subscription/" + SUB_ID + "/UsagePoint") {
+        return send(res, 200, u.searchParams.get("page") === "2"
+          ? atomFeed(base + "/Subscription/" + SUB_ID + "/UsagePoint", [base + "/UsagePoint/10"])
+          : withNext(atomFeed(base + "/Subscription/" + SUB_ID + "/UsagePoint", [base + "/UsagePoint/" + UP_ID]), "?page=2"),
+        "application/atom+xml", cors);
+      }
+      if (u.pathname === "/espi/paged/Batch/UsagePoint/" + UP_ID) {
+        return send(res, 200, u.searchParams.get("page") === "2"
+          ? atomFeed(base + "/Batch/UsagePoint/" + UP_ID, [])
+          : withNext(fixtureXml, "?page=2"),
+        "application/atom+xml", cors);
+      }
+      if (u.pathname === "/espi/paged/UsagePoint/" + UP_ID + "/UsageSummary") {
+        return send(res, 200, u.searchParams.get("page") === "2"
+          ? atomFeed(base + "/UsagePoint/" + UP_ID + "/UsageSummary", [])
+          : withNext(usageSummaryFeed(origin), "?page=2"),
+        "application/atom+xml", cors);
+      }
       switch (u.pathname) {
         case "/espi/1_1/resource/Subscription":
           return send(res, 200, atomFeed(base + "/Subscription", [base + "/Subscription/" + SUB_ID]), "application/atom+xml", cors);
@@ -263,6 +295,7 @@ async function run() {
     if (cond) { console.log(`  ✓ ${msg}`); passed++; }
     else { console.log(`  ✗ ${msg}`); failed++; }
   };
+  const acceptance = (name, cond, msg) => ok(cond, `${name}: ${msg}`);
   const throws = (fn, msg) => {
     try { fn(); ok(false, msg + " (did not throw)"); }
     catch (e) { ok(true, `${msg} — "${e.message.slice(0, 72)}"`); }
@@ -296,6 +329,14 @@ async function run() {
   ok(loc.searchParams.get("state") === state, "authorization response echoes the state");
   const code = loc.searchParams.get("code");
   ok(/^auth_/.test(code || ""), "authorization response carries a code");
+  acceptance("GBC-AC-AUTHORIZATION-URL",
+    aUrl.searchParams.get("response_type") === "code" &&
+    aUrl.searchParams.get("client_id") === box.clientId &&
+    aUrl.searchParams.get("redirect_uri") === redirectUri &&
+    aUrl.searchParams.get("state") === state,
+    "uses the registered redirect and CSRF state");
+  acceptance("GBC-AC-SCOPES", aUrl.searchParams.get("scope") === "FB=4_5_6 USAGE_READ",
+    "joins configured scopes with one space");
 
   console.log("\n3. Callback validation");
   const cb = gbc.parseCallback(loc.search, state);
@@ -304,6 +345,9 @@ async function run() {
   const deny = gbc.parseCallback("?error=access_denied&error_description=nope", state);
   ok(!deny.ok && deny.error === "access_denied", "OAuth error callback surfaced");
   ok(/declined/.test(gbc.friendlyError(deny)), "access_denied maps to a friendly message");
+  acceptance("GBC-AC-REDIRECT-HANDLING", cb.ok && cb.code === code &&
+    gbc.parseCallback(loc.search, "deadbeef").error === "state_mismatch" &&
+    deny.error === "access_denied", "accepts matching code/state and rejects foreign state or OAuth errors");
 
   console.log("\n4. Token exchange through the real Pages Function");
   const conn = await gbc.connect(cfg, code, redirectUri);
@@ -311,6 +355,9 @@ async function run() {
   ok(conn.tokenType === "Bearer", "token type is Bearer");
   ok(Math.abs(conn.expiresAt - Date.now() - 3600e3) < 5000, "expiry computed from expires_in (~1h)");
   ok(gbc.connectionIsFresh(conn), "connection is fresh after exchange");
+  acceptance("GBC-AC-TOKEN-EXPIRY",
+    conn.expiresIn === 3600 && conn.expiresAt > Date.now() + 3500e3 && gbc.connectionIsFresh(conn),
+    "normalizes expires_in into an expiresAt and applies the freshness margin");
   await gbc.connect(cfg, code, redirectUri).then(
     () => ok(false, "authorization code reuse must be rejected"),
     (e) => ok(/invalid_grant|used/.test(e.message), `authorization code reuse rejected ("${e.message.slice(0, 48)}")`)
@@ -338,7 +385,39 @@ async function run() {
   ok(JSON.stringify(res.parsed) === JSON.stringify(direct), "connected-feed analysis is byte-identical to parsing the file fixture");
   ok(res.billingEntries === 1, `billing (UsageSummary) feed retrieved: ${res.billingEntries} entry`);
   ok(/UsageSummary/.test(res.billingXml), "billing feed XML retained for display");
+  const directPaths = box.requests.filter((r) => r.method === "GET" && r.url.split("?")[0].startsWith("/espi/"));
+  acceptance("GBC-AC-FEED-DISCOVERY", res.subscriptionId === SUB_ID && res.usagePointId === UP_ID,
+    "walks Subscription then UsagePoint and uses the first entry resource id");
+  acceptance("GBC-AC-DIRECT-ESPI",
+    directPaths.some((r) => r.url.split("?")[0] === "/espi/1_1/resource/Batch/UsagePoint/" + UP_ID) &&
+    directPaths.some((r) => r.url.split("?")[0] === "/espi/1_1/resource/UsagePoint/" + UP_ID + "/UsageSummary") &&
+    directPaths.every((r) => r.headers.authorization === "Bearer " + box.accessToken),
+    "retrieves interval and billing feeds as browser-direct bearer GETs");
+  acceptance("GBC-AC-NORMALIZE-INTERVAL", res.parsed.intervals === direct.intervals &&
+    JSON.stringify(res.parsed) === JSON.stringify(direct),
+    "passes the merged interval ESPI bytes to parseESPI");
+  acceptance("GBC-AC-NORMALIZE-BILLING", res.bills.length === 1 && res.bills[0].currency === "USD" &&
+    res.bills[0].cost === 112.45 && res.billingIncomplete === 0,
+    "passes UsageSummary bytes to parseBillingESPI and returns normalized bills");
 
+  const pagedCfg = Object.assign({}, cfg, {
+    subscriptionListPath: "/espi/paged/Subscription",
+    usagePointsPath: "/espi/paged/Subscription/{subscription}/UsagePoint",
+    intervalFeedPath: "/espi/paged/Batch/UsagePoint/{usagePoint}",
+    billingFeedPath: "/espi/paged/UsagePoint/{usagePoint}/UsageSummary"
+  });
+  const pagedBefore = box.requests.length;
+  const paged = await gbc.refreshFeeds(pagedCfg, { accessToken: box.accessToken, expiresAt: Date.now() + 3600e3 });
+  const pagedGets = box.requests.slice(pagedBefore).filter((r) => r.method === "GET" && r.url.indexOf("/espi/paged/") === 0);
+  const pagedSecondPages = pagedGets.filter((r) => r.url.indexOf("page=2") >= 0);
+  acceptance("GBC-AC-PAGINATION", pagedSecondPages.length === 4 && paged.parsed.intervals === 72 &&
+    paged.billingEntries === 1 && paged.subscriptionId === SUB_ID && paged.usagePointId === UP_ID,
+    "follows each feed's relative rel=next link and merges all pages before discovery/parsing");
+  const loopFetch = () => Promise.resolve(new Response(
+    '<feed><link rel="next" href="/loop"/></feed>', { status: 200, headers: { "content-type": "application/atom+xml" } }));
+  await gbc.apiGetPages("loop-token", "https://custodian.example/loop", loopFetch).then(
+    () => acceptance("GBC-AC-PAGINATION-GUARD", false, "rejects a pagination loop"),
+    (e) => acceptance("GBC-AC-PAGINATION-GUARD", /pagination loop/.test(e.message), "rejects a pagination loop"));
   console.log("\n7. Negative access paths");
   await gbc.apiGet("wrong-token", box.origin + "/espi/1_1/resource/Subscription").then(
     () => ok(false, "wrong bearer token must fail"),
@@ -454,6 +533,9 @@ async function run() {
   ok(pass.status === 400, "upstream 400 keeps its status through the passthrough");
   ok(await pass.text() === JSON.stringify({ error: "invalid_grant", error_description: "unknown, used, or expired code" }),
      "upstream error body passes through byte-identical");
+  acceptance("GBC-AC-UPSTREAM-ERRORS", dead.status === 502 && badJsonUp.status === 502 &&
+    noTokUp.status === 502 && pass.status === 400,
+    "maps unreachable/malformed failures locally and passes OAuth errors through unchanged");
 
   // --- body-style client auth (GBC_TOKEN_AUTH=body) ---
   const bodyAuth = await call(Object.assign({}, tokEnv, { GBC_TOKEN_AUTH: "body" }), { code: await mintCode(), redirectUri });
