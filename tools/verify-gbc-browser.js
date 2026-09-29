@@ -109,6 +109,7 @@ function startStatic(box) {
           clientId: box.clientId,
           authorizeUrl: box.origin + "/authorize",
           apiBase: box.origin,
+          redirectUri: box.origin + "/",
           scopes: ["FB=4_5_6", "USAGE_READ"],
           tokenExchangePath: "/api/gbc/token"
         }));

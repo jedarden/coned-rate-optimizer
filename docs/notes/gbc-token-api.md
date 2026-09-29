@@ -150,7 +150,7 @@ It never knows or sends `GBC_CLIENT_SECRET`.
 
 | Field | Contract |
 |---|---|
-| `configured` | `false` hides/disables the connect panel. `true` requires non-empty `clientId`, `authorizeUrl`, `apiBase`, and at least one scope. |
+| `configured` | `false` hides/disables the connect panel. `true` requires non-empty `clientId`, `authorizeUrl`, `apiBase`, `redirectUri`, and at least one scope. Production `redirectUri` is `"https://coned.jedarden.com/"`; the browser enforces that it remains the exact deployed site root. |
 | `clientId` | The ConEd-registered third-party client id. |
 | `authorizeUrl` | The OAuth authorization endpoint issued at onboarding. |
 | `apiBase` | The Data Custodian API origin/base URL. |
@@ -167,9 +167,11 @@ is rejected. The client secret and token URL are never public config.
 The connect button generates `state = randomState()` (128 bits represented as
 32 lowercase hexadecimal characters), saves it in `sessionStorage` as
 `gbc-state`, and navigates the browser to `authorizeUrl(cfg, state, redirectUri)`.
-`buildRedirectUri(location)` returns exactly `location.origin + "/"`; the
-trailing slash is part of the registered value and must match ConEd's app
-registration byte-for-byte.
+`buildRedirectUri(location, registeredUri)` returns the configured registered
+URI when it matches exactly `location.origin + "/"`; without a configured URI it
+derives that same site-root value. A query, hash, alternate path, or different
+origin is rejected before authorization. The trailing slash is part of the
+registered value and must match ConEd's app registration byte-for-byte.
 
 The authorization URL is a provider URL with these query parameters:
 

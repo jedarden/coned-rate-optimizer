@@ -34,10 +34,12 @@
     cfg.clientId = obj.clientId || "";
     cfg.authorizeUrl = obj.authorizeUrl || "";
     cfg.apiBase = obj.apiBase || "";
+    cfg.redirectUri = obj.redirectUri || "";
     cfg.scopes = Array.isArray(obj.scopes) ? obj.scopes.slice() : [];
-    cfg.configured = obj.configured === true && !!cfg.clientId && !!cfg.authorizeUrl && !!cfg.apiBase && cfg.scopes.length > 0;
+    cfg.configured = obj.configured === true && !!cfg.clientId && !!cfg.authorizeUrl && !!cfg.apiBase &&
+      !!cfg.redirectUri && cfg.scopes.length > 0;
     if (obj.configured === true && !cfg.configured) {
-      throw new Error("gbc-config.json says configured:true but is missing clientId, authorizeUrl, apiBase, or scopes");
+      throw new Error("gbc-config.json says configured:true but is missing clientId, authorizeUrl, apiBase, redirectUri, or scopes");
     }
     return cfg;
   }
@@ -69,8 +71,17 @@
 
   // ConEd third-party apps register one exact redirect URI at onboarding;
   // this tool registers the site root.
-  function buildRedirectUri(locationLike) {
-    return (locationLike && locationLike.origin ? locationLike.origin : "") + "/";
+  function buildRedirectUri(locationLike, registeredUri) {
+    var origin = locationLike && locationLike.origin ? locationLike.origin : "";
+    var derived = origin + "/";
+    if (!registeredUri) return derived;
+    var configured;
+    try { configured = new URL(registeredUri); }
+    catch (e) { throw new Error("the registered GBC redirect URI is invalid"); }
+    if (configured.origin !== origin || configured.pathname !== "/" || configured.search || configured.hash) {
+      throw new Error("the registered GBC redirect URI does not match this site root");
+    }
+    return configured.toString();
   }
 
   function authorizeUrl(cfg, state, redirectUri) {

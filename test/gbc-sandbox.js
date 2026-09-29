@@ -249,6 +249,7 @@ function startSandbox(options) {
         clientId,
         authorizeUrl: origin + "/authorize",
         apiBase: origin,
+        redirectUri: origin + "/",
         scopes: ["FB=4_5_6", "USAGE_READ"],
         tokenExchangePath: origin + "/api/gbc/token"
       });
@@ -314,7 +315,7 @@ async function run() {
   console.log("\n2. Authorization request");
   const state = gbc.randomState();
   ok(/^[0-9a-f]{32}$/.test(state), "randomState is 128-bit hex");
-  const redirectUri = gbc.buildRedirectUri({ origin: box.origin });
+  const redirectUri = gbc.buildRedirectUri({ origin: box.origin }, cfg.redirectUri);
   const aUrl = new URL(gbc.authorizeUrl(cfg, state, redirectUri));
   ok(aUrl.pathname === "/authorize", "authorize URL targets the sandbox authorize endpoint");
   ok(aUrl.searchParams.get("response_type") === "code", "response_type=code");
@@ -335,6 +336,9 @@ async function run() {
     aUrl.searchParams.get("redirect_uri") === redirectUri &&
     aUrl.searchParams.get("state") === state,
     "uses the registered redirect and CSRF state");
+  acceptance("GBC-AC-REGISTERED-REDIRECT",
+    cfg.redirectUri === redirectUri && gbc.buildRedirectUri({ origin: box.origin }, cfg.redirectUri) === redirectUri,
+    "uses the exact registered site-root URI");
   acceptance("GBC-AC-SCOPES", aUrl.searchParams.get("scope") === "FB=4_5_6 USAGE_READ",
     "joins configured scopes with one space");
 

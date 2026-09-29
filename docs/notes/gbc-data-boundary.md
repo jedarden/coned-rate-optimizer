@@ -116,15 +116,21 @@ and the connect panel never renders — the page behaves exactly as before.
 
 1. Fill `public/gbc-config.json`: `configured: true`, `clientId`,
    `authorizeUrl` (ConEd's authorization endpoint), `apiBase` (their Data
-   Custodian REST base), `scopes` (the granted scope strings). If their REST
-   paths deviate from the ESPI 1.1 defaults in `public/gbc.js`
+   Custodian REST base), `redirectUri: "https://coned.jedarden.com/"`, and
+   `scopes` (the granted scope strings). The client rejects a redirect URI
+   that is not the deployed site root. If their REST paths deviate from the
+   ESPI 1.1 defaults in `public/gbc.js`
    (`DEFAULT_PATHS`), override the path templates here too.
 2. Set the Pages Function env bindings `GBC_CLIENT_ID`, `GBC_CLIENT_SECRET`,
    `GBC_TOKEN_URL` (optionally `GBC_TOKEN_AUTH=basic|body`) out-of-band —
    never in this repo. Register the redirect URI **`<site origin>/`** with
    ConEd.
-3. Re-run the sandbox harness (`node test/gbc-sandbox.js`) against a config
-   copied from the real endpoints, then the browser E2E
+3. Run `node scripts/smoke-gbc-production.js` against the deployment. It
+   validates the public config and registered root redirect, rejects a
+   foreign-origin token relay, checks the same-origin malformed-body response,
+   and submits only a synthetic authorization code. Then re-run the sandbox
+   harness (`node test/gbc-sandbox.js`) against a config copied from the real
+   endpoints, followed by the browser E2E
    (`tools/verify-gbc-browser.js`).
 
 ## Verification against a sandbox Third-Party App

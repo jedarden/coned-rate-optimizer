@@ -121,12 +121,17 @@ GBC_SMOKE_URL=https://coned.jedarden.com/api/gbc/token \
   node scripts/smoke-gbc-production.js
 ```
 
-The check makes two safe requests and never sends a client credential or logs
-either response body:
+The check first validates the deployed public configuration, including the
+registered redirect URI (`https://coned.jedarden.com/`) and the relative
+`/api/gbc/token` path. It then makes three safe token-endpoint requests and
+never sends a client credential or logs either response body:
 
-1. A malformed body must receive `400 invalid_request`. A `503
+1. A foreign `Origin` must receive `403 origin_not_allowed`, proving the
+   same-origin relay guard runs before the body is read or Con Edison is
+   contacted.
+2. A same-origin malformed body must receive `400 invalid_request`. A `503
    gbc_not_configured` result means at least one required binding is missing.
-2. A newly generated, synthetic authorization code must receive Con Edison's
+3. A newly generated, synthetic authorization code must receive Con Edison's
    normal `400 invalid_grant`. A `400`, `401`, or `403 invalid_client` result
    means the configured client authentication was rejected and the bindings
    must be checked or rotated. Network failures, `502 upstream_unreachable`,
@@ -134,8 +139,16 @@ either response body:
 
 The synthetic code is never a customer grant and cannot retrieve usage. The
 smoke check is therefore suitable for production and can be rerun after a
-secret rotation. It does not replace the browser E2E sandbox or the normal
-deploy gate.
+secret rotation. The committed contract suite additionally drives an
+authorization callback and the real client through direct interval and
+billing-feed GETs, then asserts that the token endpoint saw only
+`{code, redirectUri}` and never usage, billing, or token bytes:
+
+```bash
+node test/gbc-production-smoke.js
+```
+
+It does not replace the browser E2E sandbox or the normal deploy gate.
 
 To revoke access, revoke the third-party app in Con Edison's developer/account
 controls, then remove the Pages bindings through the Cloudflare dashboard or

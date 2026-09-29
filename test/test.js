@@ -987,7 +987,7 @@ try {
   throws(() => gbc.validateConfig({ configured: true }), "configured:true without credentials rejected");
   const cfg = gbc.validateConfig({
     configured: true, clientId: "cid", authorizeUrl: "https://coned.example/authorize",
-    apiBase: "https://api.example", scopes: ["FB=4_5_6"]
+    apiBase: "https://api.example", redirectUri: "https://site.example/", scopes: ["FB=4_5_6"]
   });
   assert(cfg.configured === true, "complete config validates as configured");
   assert(cfg.intervalFeedPath === gbc.DEFAULT_PATHS.intervalFeedPath,
@@ -1006,6 +1006,10 @@ try {
     "authorize request carries client_id, redirect_uri, state, scope");
   assert(gbc.buildRedirectUri({ origin: "https://coned.jedarden.com" }) === "https://coned.jedarden.com/",
     "redirect URI is the registered site root");
+  assert(gbc.buildRedirectUri({ origin: "https://site.example" }, cfg.redirectUri) === "https://site.example/",
+    "configured redirect URI is used when it matches the site root");
+  throws(() => gbc.buildRedirectUri({ origin: "https://other.example" }, cfg.redirectUri),
+    "registered redirect URI cannot point at another origin");
 
   // callback validation (code/state/error; state mismatch = CSRF)
   const cb = gbc.parseCallback("?code=c1&state=st4te", "st4te");

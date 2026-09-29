@@ -977,7 +977,7 @@
     try {
       var state = G.randomState();
       G.saveState(state);
-      location.href = G.authorizeUrl(gbcCfg, state, G.buildRedirectUri(location));
+      location.href = G.authorizeUrl(gbcCfg, state, G.buildRedirectUri(location, gbcCfg.redirectUri));
     } catch (e) { gbcStatus(e.message, "bad"); }
   }
   function gbcDisconnect() {
@@ -996,7 +996,7 @@
     if (!cb.ok) { gbcStatus(G.friendlyError(cb), "bad"); return true; }
     gbcBusy(true);
     gbcStatus("Exchanging your ConEd authorization for an access token…", "busy");
-    G.connect(gbcCfg, cb.code, G.buildRedirectUri(location)).then(function (conn) {
+    G.connect(gbcCfg, cb.code, G.buildRedirectUri(location, gbcCfg.redirectUri)).then(function (conn) {
       gbcPull(conn);
     }).catch(function (e) {
       gbcBusy(false);
