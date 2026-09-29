@@ -24,6 +24,8 @@ node test/test.js
 node test/monitoring-retention.js
 node test/checkout.js
 node test/backtest-harness.js
+# Release certification gate: this contract test invokes the artifact validator
+# CLI and proves its exit 0/1/2 behavior before a release can proceed.
 node test/certification-workflow.js
 node test/analytics-privacy.js
 node test/gbc-sandbox.js

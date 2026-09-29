@@ -15,10 +15,10 @@ const cohorts = [
   { territory: "westchester", currentPlan: "tou", loadShape: "summer-peaking", meter: "legacy" },
 ];
 
-function miss() {
+function miss(period = "2025-02-01 – 2025-03-01", actualTotal = 106) {
   return {
-    period: "2025-02-01 – 2025-03-01", modeledTotal: 100, actualTotal: 106,
-    delta: -6, pctError: 5.6604, band: "fail",
+    period, modeledTotal: 100, actualTotal,
+    delta: 100 - actualTotal, pctError: Math.abs(100 - actualTotal) / actualTotal * 100, band: "fail",
     modeledComponents: [{ component: "delivery", amount: 40 }, { component: "commodity", amount: 30 }],
     worstModeledComponent: "delivery ($40.00)", cause: "bill adjustment not represented",
     disposition: "accepted residual; model issue filed", owner: "reviewer-a",
@@ -124,6 +124,89 @@ try {
   assert.strictEqual(providerRun.result.status, 2, "provider evidence can be structurally valid but not eligible");
   assert(/payment provider certification is not passing/.test(providerRun.result.stdout), "missing provider certification is explicit");
 
+  const exactGate = artifact({ status: "approved", enablement: {
+    chargingCertified: false, providerCertified: false, freeResultPreserved: true,
+    changeRef: "release-exact-gate", approvedBy: ["reviewer-a", "reviewer-b"],
+    rollback: { changeRef: "rollback-exact-gate", procedure: "disable server bindings, then revert client flags" },
+  } });
+  exactGate.accuracy.accounts[0].within2Periods = 0;
+  exactGate.accuracy.accounts[0].pctWithin2 = 0;
+  exactGate.accuracy.accounts[0].maxPctError = 7.4074;
+  exactGate.accuracy.accounts[0].misses.push(miss("2025-03-01 – 2025-04-01", 108));
+  exactGate.accuracy.aggregate.within2Periods = 38;
+  exactGate.accuracy.aggregate.shareWithin2Pct = 95;
+  assert.strictEqual(run(exactGate).result.status, 0, "the approved artifact passes at the exact derived 95% gate");
+
+  const belowExactGate = artifact({ status: "approved", enablement: {
+    chargingCertified: false, providerCertified: false, freeResultPreserved: true,
+    changeRef: "release-below-gate", approvedBy: ["reviewer-a", "reviewer-b"],
+    rollback: { changeRef: "rollback-below-gate", procedure: "disable server bindings, then revert client flags" },
+  } });
+  belowExactGate.accuracy.accounts[0].within2Periods = 0;
+  belowExactGate.accuracy.accounts[0].pctWithin2 = 0;
+  belowExactGate.accuracy.accounts[0].maxPctError = 7.4074;
+  belowExactGate.accuracy.accounts[0].misses.push(miss("2025-03-01 – 2025-04-01", 108));
+  belowExactGate.accuracy.accounts[1].within2Periods = 1;
+  belowExactGate.accuracy.accounts[1].pctWithin2 = 50;
+  belowExactGate.accuracy.accounts[1].maxPctError = 7.4074;
+  belowExactGate.accuracy.accounts[1].misses.push(miss("2025-04-01 – 2025-05-01", 108));
+  belowExactGate.accuracy.aggregate.within2Periods = 37;
+  belowExactGate.accuracy.aggregate.shareWithin2Pct = 92.5;
+  const belowGateRun = run(belowExactGate);
+  assert.strictEqual(belowGateRun.result.status, 2, "a structurally valid artifact below 95% is not eligible");
+  assert(/within 2%/.test(belowGateRun.result.stdout), "the derived gate failure is reported");
+
+  const handEditedShare = artifact();
+  handEditedShare.accuracy.aggregate.shareWithin2Pct = 100;
+  const shareRun = run(handEditedShare);
+  assert.strictEqual(shareRun.result.status, 1, "a hand-edited aggregate share is rejected instead of trusted");
+
+  const nonStandardGate = artifact();
+  nonStandardGate.accuracy.gateFractionPct = 99;
+  const thresholdRun = run(nonStandardGate);
+  assert.strictEqual(thresholdRun.result.status, 1, "the release gate threshold cannot be relaxed or changed in the artifact");
+
+  const duplicateReviewers = artifact();
+  duplicateReviewers.review.provider.reviewer = duplicateReviewers.review.accuracy.reviewer;
+  const reviewerRun = run(duplicateReviewers);
+  assert.strictEqual(reviewerRun.result.status, 1, "accuracy and provider approvals must be independent");
+
+  const mismatchedProviderCommit = artifact();
+  mismatchedProviderCommit.provider.testedCommit = "b".repeat(40);
+  const commitRun = run(mismatchedProviderCommit);
+  assert.strictEqual(commitRun.result.status, 1, "provider evidence must be tested at the candidate model commit");
+
+  const missingRollback = artifact();
+  delete missingRollback.enablement.rollback.procedure;
+  const rollbackRun = run(missingRollback);
+  assert.strictEqual(rollbackRun.result.status, 1, "rollback evidence is required for the enablement change");
+
+  const oneApprover = artifact({ status: "approved", enablement: {
+    chargingCertified: false, providerCertified: false, freeResultPreserved: true,
+    changeRef: "release-one-approver", approvedBy: ["reviewer-a"],
+    rollback: { changeRef: "rollback-one-approver", procedure: "disable server bindings, then revert client flags" },
+  } });
+  const approverRun = run(oneApprover);
+  assert.strictEqual(approverRun.result.status, 1, "a controlled enablement change requires two distinct approvers");
+
+  const partialFlags = artifact({ status: "approved", enablement: {
+    chargingCertified: true, providerCertified: false, freeResultPreserved: true,
+    changeRef: "release-partial", approvedBy: ["reviewer-a", "reviewer-b"],
+    rollback: { changeRef: "rollback-partial", procedure: "disable server bindings, then revert client flags" },
+  } });
+  const partialRun = run(partialFlags);
+  assert.strictEqual(partialRun.result.status, 2, "partially enabled certification flags remain fail-closed");
+
+  const unredacted = artifact();
+  const participantPayload = "Jane Doe, 212-555-0100, jane@example.test, 123 Main Street";
+  unredacted.participantData = participantPayload;
+  const privacyRun = run(unredacted);
+  assert.strictEqual(privacyRun.result.status, 1, "participant payloads are outside the artifact schema");
+  assert(!privacyRun.result.stdout.includes(participantPayload) && !privacyRun.result.stderr.includes(participantPayload), "validator diagnostics never print participant payloads");
+
+  assert.deepStrictEqual(validator.validateArtifact(approved), [], "the module API applies the same schema as the CLI");
+  assert.strictEqual(validator.eligibility(approved).eligible, true, "eligibility is derived from the approved evidence");
+
   const rates = JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8"));
   assert.strictEqual(rates.pricing.chargingCertified, false, "the repository ships with charging disabled");
   assert.strictEqual(rates.pricing.providerCertified, false, "the repository ships with provider collection disabled");
@@ -131,6 +214,12 @@ try {
   assert(/free-result invariant/.test(runbook), "the runbook preserves the free-result invariant");
   assert(/every miss/i.test(runbook), "the runbook requires every miss to be documented");
   assert(/distinct approvers/.test(runbook), "the runbook requires controlled two-person enablement");
+  const releaseGate = fs.readFileSync(path.join(__dirname, "../scripts/definition-of-done.sh"), "utf8");
+  assert(/node test\/certification-workflow\.js/.test(releaseGate), "the repository definition of done runs the certification validator contract");
+  const ignored = spawnSync("git", ["check-ignore", "--no-index", "audit-corpus/acct-01/usage.csv", "audit-results/backtest-results.json", "certification-artifacts/certification.json"], { encoding: "utf8" });
+  assert.strictEqual(ignored.status, 0, "participant corpus, audit output, and certification artifacts are ignored by Git");
+  const tracked = spawnSync("git", ["ls-files", "audit-corpus", "audit-results", "certification-artifacts"], { encoding: "utf8" });
+  assert.strictEqual(tracked.stdout, "", "participant data and certification artifacts are not tracked");
 } finally {
   fs.rmSync(TMP, { recursive: true, force: true });
 }

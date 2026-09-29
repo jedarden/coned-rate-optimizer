@@ -48,6 +48,15 @@ function iso(value, label, errors) {
 function enumValue(value, allowed, label, errors) {
   if (!allowed.includes(value)) errors.push(`${label} must be one of ${allowed.join(", ")}`);
 }
+function closeEnough(actual, expected) {
+  return Number.isFinite(actual) && Number.isFinite(expected) && Math.abs(actual - expected) <= 0.0001;
+}
+function category(value) {
+  return typeof value === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(value);
+}
+function categoryKey(value) {
+  return typeof value === "string" && /^[a-z][A-Za-z0-9_-]{0,31}$/.test(value);
+}
 function safeId(value, label, errors) {
   string(value, label, errors);
   if (typeof value === "string" && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) errors.push(`${label} must be an opaque identifier, not an email, phone number, or free-form text`);
@@ -79,6 +88,9 @@ function validateArtifact(artifact) {
   else {
     unknownKeys(accuracy, ACCURACY_KEYS, "artifact.accuracy", errors);
     ACCURACY_KEYS.forEach((key) => required(accuracy, key, "artifact.accuracy", errors));
+    if (accuracy.minimumAccounts !== 20) errors.push("artifact.accuracy.minimumAccounts must be exactly 20");
+    if (accuracy.passPct !== 2) errors.push("artifact.accuracy.passPct must be exactly 2");
+    if (accuracy.gateFractionPct !== 95) errors.push("artifact.accuracy.gateFractionPct must be exactly 95");
     integer(accuracy.minimumAccounts, "artifact.accuracy.minimumAccounts", errors, 20);
     number(accuracy.passPct, "artifact.accuracy.passPct", errors, 0);
     number(accuracy.gateFractionPct, "artifact.accuracy.gateFractionPct", errors, 95);
@@ -96,6 +108,10 @@ function validateArtifact(artifact) {
       number(aggregate.maxPctError, "artifact.accuracy.aggregate.maxPctError", errors, 0);
       if (Number.isInteger(aggregate.within2Periods) && Number.isInteger(aggregate.supportedPeriods) && aggregate.within2Periods > aggregate.supportedPeriods) errors.push("artifact.accuracy.aggregate.within2Periods cannot exceed supportedPeriods");
       if (Number.isFinite(aggregate.shareWithin2Pct) && aggregate.shareWithin2Pct > 100) errors.push("artifact.accuracy.aggregate.shareWithin2Pct cannot exceed 100");
+      if (Number.isInteger(aggregate.supportedPeriods) && Number.isInteger(aggregate.within2Periods) && Number.isFinite(aggregate.shareWithin2Pct)) {
+        const derivedShare = aggregate.supportedPeriods ? aggregate.within2Periods / aggregate.supportedPeriods * 100 : 0;
+        if (!closeEnough(aggregate.shareWithin2Pct, derivedShare)) errors.push("artifact.accuracy.aggregate.shareWithin2Pct must be derived from within2Periods/supportedPeriods");
+      }
     }
     if (!Array.isArray(accuracy.accounts)) errors.push("artifact.accuracy.accounts must be an array");
     else {
@@ -110,19 +126,29 @@ function validateArtifact(artifact) {
         if (ids.has(account.id)) errors.push(`${label}.id is duplicated`);
         ids.add(account.id);
         if (!isObject(account.cohort)) errors.push(`${label}.cohort must be a categorical object`);
-        else Object.keys(account.cohort).forEach((key) => {
-          if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(key) || typeof account.cohort[key] !== "string" || !account.cohort[key].trim()) errors.push(`${label}.cohort contains an invalid categorical value`);
+        else Object.entries(account.cohort).forEach(([key, value]) => {
+          if (!categoryKey(key) || !category(value)) errors.push(`${label}.cohort contains an invalid categorical value`);
         });
         integer(account.supportedPeriods, `${label}.supportedPeriods`, errors, 1);
         integer(account.within2Periods, `${label}.within2Periods`, errors, 0);
         number(account.pctWithin2, `${label}.pctWithin2`, errors, 0);
         number(account.maxPctError, `${label}.maxPctError`, errors, 0);
         if (Number.isInteger(account.within2Periods) && Number.isInteger(account.supportedPeriods) && account.within2Periods > account.supportedPeriods) errors.push(`${label}.within2Periods cannot exceed supportedPeriods`);
+        if (Number.isInteger(account.within2Periods) && Number.isInteger(account.supportedPeriods)) {
+          const derivedShare = account.within2Periods / account.supportedPeriods * 100;
+          if (!closeEnough(account.pctWithin2, derivedShare)) errors.push(`${label}.pctWithin2 must be derived from within2Periods/supportedPeriods`);
+        }
         if (!Array.isArray(account.misses)) errors.push(`${label}.misses must be an array`);
         else {
           const expectedMisses = Number.isInteger(account.supportedPeriods) && Number.isInteger(account.within2Periods) ? account.supportedPeriods - account.within2Periods : null;
           if (expectedMisses !== null && account.misses.length !== expectedMisses) errors.push(`${label}.misses must document every period outside the 2% gate (expected ${expectedMisses})`);
-          account.misses.forEach((miss, j) => validateMiss(miss, `${label}.misses[${j}]`, errors));
+          const periods = new Set();
+          account.misses.forEach((miss, j) => {
+            validateMiss(miss, `${label}.misses[${j}]`, errors);
+            if (isObject(miss) && periods.has(miss.period)) errors.push(`${label}.misses[${j}].period is duplicated`);
+            if (isObject(miss)) periods.add(miss.period);
+          });
+          if (Number.isFinite(account.maxPctError) && account.misses.some((miss) => isObject(miss) && Number.isFinite(miss.pctError) && miss.pctError > account.maxPctError + 0.0001)) errors.push(`${label}.maxPctError must include every documented miss`);
         }
         if (Number.isInteger(account.supportedPeriods)) supported += account.supportedPeriods;
         if (Number.isInteger(account.within2Periods)) within2 += account.within2Periods;
@@ -144,11 +170,15 @@ function validateArtifact(artifact) {
     else {
       const accountCount = artifact.accuracy && artifact.accuracy.accounts && artifact.accuracy.accounts.length;
       const diverseDimensions = Object.keys(diversity.dimensions).filter((dimension) => {
+        if (!categoryKey(dimension)) { errors.push(`artifact.diversity.dimensions.${dimension} must be categorical`); return false; }
         const buckets = diversity.dimensions[dimension];
         if (!isObject(buckets)) { errors.push(`artifact.diversity.dimensions.${dimension} must be an object`); return false; }
         const total = Object.values(buckets).reduce((sum, count) => sum + (Number.isInteger(count) ? count : 0), 0);
         if (total !== accountCount) errors.push(`artifact.diversity.dimensions.${dimension} must sum to the account count`);
-        Object.entries(buckets).forEach(([bucket, count]) => integer(count, `artifact.diversity.dimensions.${dimension}.${bucket}`, errors, 1));
+        Object.entries(buckets).forEach(([bucket, count]) => {
+          if (!category(bucket)) errors.push(`artifact.diversity.dimensions.${dimension}.${bucket} must be categorical`);
+          integer(count, `artifact.diversity.dimensions.${dimension}.${bucket}`, errors, 1);
+        });
         return Object.keys(buckets).length >= 2;
       });
       if (diverseDimensions.length < 2) errors.push("artifact.diversity must span at least two dimensions with at least two buckets each");
@@ -163,18 +193,24 @@ function validateArtifact(artifact) {
     safeId(provider.id, "artifact.provider.id", errors);
     enumValue(provider.status, ["pass", "fail", "pending"], "artifact.provider.status", errors);
     if (typeof provider.testedCommit !== "string" || !/^[0-9a-f]{40}$/.test(provider.testedCommit)) errors.push("artifact.provider.testedCommit must be a full lowercase Git commit SHA");
+    if (isObject(model) && provider.testedCommit !== model.commit) errors.push("artifact.provider.testedCommit must equal artifact.model.commit");
     iso(provider.testedAt, "artifact.provider.testedAt", errors);
     if (!Array.isArray(provider.checks) || provider.checks.length === 0) errors.push("artifact.provider.checks must contain the provider certification checks");
-    else provider.checks.forEach((check, i) => {
+    else {
+      const ids = new Set();
+      provider.checks.forEach((check, i) => {
       const label = `artifact.provider.checks[${i}]`;
       if (!isObject(check)) { errors.push(`${label} must be an object`); return; }
       unknownKeys(check, CHECK_KEYS, label, errors);
       CHECK_KEYS.forEach((key) => required(check, key, label, errors));
       safeId(check.id, `${label}.id`, errors);
+      if (ids.has(check.id)) errors.push(`${label}.id is duplicated`);
+      ids.add(check.id);
       enumValue(check.result, ["pass", "fail"], `${label}.result`, errors);
       string(check.command, `${label}.command`, errors);
       string(check.evidence, `${label}.evidence`, errors);
-    });
+      });
+    }
   }
 
   const review = artifact.review;
@@ -183,6 +219,7 @@ function validateArtifact(artifact) {
     unknownKeys(review, REVIEW_KEYS, "artifact.review", errors);
     REVIEW_KEYS.forEach((key) => required(review, key, "artifact.review", errors));
     REVIEW_KEYS.forEach((key) => validateReviewEntry(review[key], `artifact.review.${key}`, errors));
+    if (isObject(review.accuracy) && isObject(review.provider) && review.accuracy.reviewer === review.provider.reviewer) errors.push("artifact.review accuracy and provider approvals must have distinct reviewers");
   }
 
   const enablement = artifact.enablement;
@@ -196,7 +233,15 @@ function validateArtifact(artifact) {
     if (enablement.freeResultPreserved !== true) errors.push("artifact.enablement.freeResultPreserved must remain true");
     if (enablement.changeRef !== null) string(enablement.changeRef, "artifact.enablement.changeRef", errors);
     if (!Array.isArray(enablement.approvedBy)) errors.push("artifact.enablement.approvedBy must be an array");
-    else enablement.approvedBy.forEach((reviewer, i) => safeId(reviewer, `artifact.enablement.approvedBy[${i}]`, errors));
+    else {
+      const approvers = new Set();
+      enablement.approvedBy.forEach((reviewer, i) => {
+        safeId(reviewer, `artifact.enablement.approvedBy[${i}]`, errors);
+        if (approvers.has(reviewer)) errors.push(`artifact.enablement.approvedBy[${i}] is duplicated`);
+        approvers.add(reviewer);
+      });
+      if (enablement.changeRef !== null && enablement.approvedBy.length < 2) errors.push("artifact.enablement.approvedBy must contain two distinct approvers for a change");
+    }
     if (!isObject(enablement.rollback)) errors.push("artifact.enablement.rollback must be an object");
     else {
       unknownKeys(enablement.rollback, ROLLBACK_KEYS, "artifact.enablement.rollback", errors);
@@ -215,7 +260,16 @@ function validateMiss(miss, label, errors) {
   ["period", "modeledTotal", "actualTotal", "delta", "pctError", "band", "modeledComponents", "worstModeledComponent", "cause", "disposition", "owner", "resolution"].forEach((key) => required(miss, key, label, errors));
   string(miss.period, `${label}.period`, errors);
   ["modeledTotal", "actualTotal", "delta", "pctError"].forEach((key) => number(miss[key], `${label}.${key}`, errors));
+  if (Number.isFinite(miss.modeledTotal) && Number.isFinite(miss.actualTotal) && Number.isFinite(miss.delta) && !closeEnough(miss.delta, miss.modeledTotal - miss.actualTotal)) errors.push(`${label}.delta must equal modeledTotal - actualTotal`);
+  if (Number.isFinite(miss.actualTotal) && Number.isFinite(miss.modeledTotal) && Number.isFinite(miss.pctError)) {
+    const derivedPct = miss.actualTotal === 0 ? (miss.modeledTotal === 0 ? 0 : Infinity) : Math.abs(miss.modeledTotal - miss.actualTotal) / Math.abs(miss.actualTotal) * 100;
+    if (!closeEnough(miss.pctError, derivedPct)) errors.push(`${label}.pctError must be derived from delta/actualTotal`);
+  }
   enumValue(miss.band, ["warn", "fail"], `${label}.band`, errors);
+  if (Number.isFinite(miss.pctError)) {
+    const expectedBand = miss.pctError <= 5 ? "warn" : "fail";
+    if (miss.band !== expectedBand) errors.push(`${label}.band does not match the documented percentage error`);
+  }
   if (!Array.isArray(miss.modeledComponents) || miss.modeledComponents.length === 0) errors.push(`${label}.modeledComponents must retain the modeled component breakdown`);
   else miss.modeledComponents.forEach((component, i) => {
     if (!isObject(component) || typeof component.component !== "string" || typeof component.amount !== "number") errors.push(`${label}.modeledComponents[${i}] must contain component and numeric amount`);
@@ -239,15 +293,25 @@ function validateReviewEntry(entry, label, errors) {
 
 function eligibility(artifact) {
   const reasons = [];
+  if (!isObject(artifact)) return { eligible: false, reasons: ["certification artifact is not a JSON object"] };
+  if (validateArtifact(artifact).length) reasons.push("certification artifact schema is invalid");
   const a = artifact.accuracy, p = artifact.provider, r = artifact.review, e = artifact.enablement;
   if (!artifact || artifact.status !== "approved") reasons.push("certification artifact is not approved");
+  if (!a || a.minimumAccounts !== 20) reasons.push("the certification gate requires exactly 20 minimum accounts");
+  if (!a || a.passPct !== 2) reasons.push("the certification gate is fixed at 2% per supported period");
+  if (!a || a.gateFractionPct !== 95) reasons.push("the certification gate is fixed at 95% of supported periods");
   if (!a || a.status !== "pass") reasons.push("accuracy gate is not passing");
   if (!a || !a.aggregate || a.aggregate.usableAccounts < a.minimumAccounts) reasons.push("fewer than 20 usable accounts are recorded");
   if (!a || !a.aggregate || a.aggregate.shareWithin2Pct < a.gateFractionPct) reasons.push("fewer than 95% of supported periods are within 2%");
   if (!p || p.status !== "pass" || !p.checks || p.checks.some((check) => check.result !== "pass")) reasons.push("payment provider certification is not passing");
+  if (!p || !a || !artifact.model || p.testedCommit !== artifact.model.commit) reasons.push("payment provider was not tested at the candidate model commit");
   if (!r || r.accuracy.status !== "approved") reasons.push("accuracy review is not approved");
   if (!r || r.provider.status !== "approved") reasons.push("payment-provider review is not approved");
+  if (!r || !r.accuracy || !r.provider || r.accuracy.reviewer === r.provider.reviewer) reasons.push("accuracy and provider approvals must be separate");
   if (!e || e.freeResultPreserved !== true) reasons.push("free-result preservation is not asserted");
+  if (!e || !e.changeRef || !Array.isArray(e.approvedBy) || e.approvedBy.length < 2 || new Set(e.approvedBy).size < 2) reasons.push("the enablement change lacks two distinct approvers");
+  if (!e || !e.rollback || !e.rollback.changeRef || !e.rollback.procedure) reasons.push("tested rollback evidence is missing");
+  if (e && e.chargingCertified !== e.providerCertified) reasons.push("charging and provider certification flags must be enabled together");
   return { eligible: reasons.length === 0, reasons };
 }
 
