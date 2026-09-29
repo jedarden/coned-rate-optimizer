@@ -225,7 +225,7 @@ try {
     assert.strictEqual(tracked.stdout, "", "participant data and certification artifacts are not tracked");
   } else {
     const gitignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
-    assert(/\/audit-corpus\//.test(gitignore) && /\/audit-results\//.test(gitignore) && /\/certification-artifacts\//.test(gitignore), "the committed ignore policy protects participant and certification artifacts");
+    assert(/(?:^|\n)\/?audit-corpus\//.test(gitignore) && /(?:^|\n)\/?audit-results\//.test(gitignore) && /(?:^|\n)\/?certification-artifacts\//.test(gitignore), "the committed ignore policy protects participant and certification artifacts");
     assert(!["audit-corpus", "audit-results", "certification-artifacts"].some((dir) => fs.existsSync(path.join(repoRoot, dir))), "a clean release archive contains no participant or certification artifacts");
   }
 } finally {
