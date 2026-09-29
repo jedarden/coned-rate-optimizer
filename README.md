@@ -127,6 +127,9 @@ tools/
                                 authorization + import flow, refused-callback
                                 shapes, token lifetime, and the app-server
                                 boundary checks (needs playwright)
+  verify-file-import-privacy.js <- browser privacy regression: real CSV,
+                                   XML/ESPI, ZIP, and failed imports with
+                                   application-server request accounting
 test/              <- automated test suite, tariff-refresh regression, and fixtures
   test.js          <- automated tests for calc.js core (+ GBC core, Test 17;
                       persistent monitoring, Test 21)
@@ -161,6 +164,17 @@ python3 -m http.server -d public 8000 &
 NODE_PATH=/home/coding/spaxel/dashboard/node_modules \
   node tools/verify-agentation-mount.js            # local
 node tools/verify-agentation-mount.js https://coned.jedarden.com   # production
+```
+
+The file-import privacy boundary can be exercised against a local static
+server with a real browser. It records every application-origin request and
+allows only the required static assets plus bare, documented analytics event
+names:
+
+```bash
+NODE_PATH=/home/coding/spaxel/dashboard/node_modules \
+CHROME_PATH=/nix/store/53p8msmqxpi829drw6qkvaamidxy9cj-chromium-151.0.7922.173/bin/chromium \
+  node tools/verify-file-import-privacy.js
 ```
 
 ## Test the calc.js core
