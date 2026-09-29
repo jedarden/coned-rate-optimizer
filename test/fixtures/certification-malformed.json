@@ -1,0 +1,7 @@
+{
+  "artifactVersion": 1,
+  "artifactId": "cert-fixture-malformed-001",
+  "status": "approved",
+  "generatedAt": "not-a-timestamp",
+  "model": { "tool": "tools/backtest-accounts.js", "commit": "not-a-commit" }
+}

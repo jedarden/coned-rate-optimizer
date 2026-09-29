@@ -1,0 +1,80 @@
+{
+  "artifactVersion": 1,
+  "artifactId": "cert-fixture-eligible-001",
+  "status": "approved",
+  "generatedAt": "2026-09-28T20:00:00Z",
+  "model": {
+    "tool": "tools/backtest-accounts.js",
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "ratesAsOf": "2026-09-28",
+    "policyVersion": 1
+  },
+  "accuracy": {
+    "minimumAccounts": 20,
+    "passPct": 2,
+    "gateFractionPct": 95,
+    "aggregate": {
+      "usableAccounts": 20,
+      "supportedPeriods": 40,
+      "within2Periods": 39,
+      "shareWithin2Pct": 97.5,
+      "meanPctError": 0.1415,
+      "maxPctError": 5.66037735849
+    },
+    "accounts": [
+      { "id": "acct-01", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 1, "pctWithin2": 50, "maxPctError": 5.66037735849, "misses": [
+        { "period": "2025-02-01 – 2025-03-01", "modeledTotal": 100, "actualTotal": 106, "delta": -6, "pctError": 5.66037735849, "band": "fail", "modeledComponents": [{ "component": "delivery", "amount": 40 }, { "component": "commodity", "amount": 30 }], "worstModeledComponent": "delivery ($40.00)", "cause": "bill adjustment not represented", "disposition": "accepted residual; model issue filed", "owner": "reviewer-a", "resolution": "reproduce after tariff refresh before any renewal" }
+      ] },
+      { "id": "acct-02", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-03", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-04", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-05", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-06", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-07", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-08", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-09", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-10", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-11", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-12", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-13", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-14", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-15", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-16", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-17", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-18", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-19", "cohort": { "territory": "nyc", "plan": "standard", "meter": "smart" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] },
+      { "id": "acct-20", "cohort": { "territory": "westchester", "plan": "tou", "meter": "legacy" }, "supportedPeriods": 2, "within2Periods": 2, "pctWithin2": 100, "maxPctError": 0, "misses": [] }
+    ],
+    "status": "pass"
+  },
+  "diversity": {
+    "dimensions": {
+      "territory": { "nyc": 10, "westchester": 10 },
+      "plan": { "standard": 10, "tou": 10 },
+      "meter": { "smart": 10, "legacy": 10 }
+    },
+    "reviewerAttested": true
+  },
+  "provider": {
+    "id": "stripe-checkout",
+    "status": "pass",
+    "testedCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "testedAt": "2026-09-28T20:05:00Z",
+    "checks": [
+      { "id": "fixed-price", "result": "pass", "command": "node test/checkout.js", "evidence": "fixed product and policy fields verified" },
+      { "id": "return-verification", "result": "pass", "command": "node test/checkout.js", "evidence": "mismatched sessions do not unlock" }
+    ]
+  },
+  "review": {
+    "accuracy": { "status": "approved", "reviewer": "reviewer-a", "reviewedAt": "2026-09-28T21:00:00Z", "decisionRef": "review-accuracy-fixture-001" },
+    "provider": { "status": "approved", "reviewer": "reviewer-b", "reviewedAt": "2026-09-28T21:05:00Z", "decisionRef": "review-provider-fixture-001" }
+  },
+  "enablement": {
+    "chargingCertified": true,
+    "providerCertified": true,
+    "freeResultPreserved": true,
+    "changeRef": "release-fixture-001",
+    "approvedBy": ["reviewer-a", "reviewer-b"],
+    "rollback": { "changeRef": "rollback-fixture-001", "procedure": "disable server bindings, then revert client flags" }
+  }
+}

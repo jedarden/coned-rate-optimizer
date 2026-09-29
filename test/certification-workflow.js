@@ -9,6 +9,7 @@ const { spawnSync } = require("child_process");
 const validator = require("../tools/validate-certification.js");
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "coned-certification-"));
+const FIXTURES = path.join(__dirname, "fixtures");
 const commit = "a".repeat(40);
 const cohorts = [
   { territory: "nyc", currentPlan: "standard", loadShape: "winter-peaking", meter: "smart" },
@@ -82,12 +83,73 @@ function merge(base, overrides) {
 function run(value) {
   const file = path.join(TMP, "artifact.json");
   fs.writeFileSync(file, JSON.stringify(value));
+  return runPath(file);
+}
+
+function runPath(file) {
   const result = spawnSync(process.execPath, [path.join(__dirname, "../tools/validate-certification.js"), "--artifact", file], { encoding: "utf8" });
   return { result, file };
 }
 
+function fixture(name) {
+  return runPath(path.join(FIXTURES, name));
+}
+
 try {
   console.log("Certification workflow: artifact and enablement contracts");
+
+  const fixtureEligible = fixture("certification-eligible.json");
+  assert.strictEqual(fixtureEligible.result.status, 0, "the committed eligible artifact fixture exits 0");
+  assert(/"valid": true/.test(fixtureEligible.result.stdout), "the eligible fixture is structurally valid");
+  assert(/"eligible": true/.test(fixtureEligible.result.stdout), "the eligible fixture derives eligibility from its evidence");
+  const eligibleFixtureArtifact = JSON.parse(fs.readFileSync(fixtureEligible.file, "utf8"));
+  assert.deepStrictEqual(validator.validateArtifact(eligibleFixtureArtifact), [], "the eligible fixture passes the module schema API");
+  assert.strictEqual(validator.eligibility(eligibleFixtureArtifact).eligible, true, "the eligible fixture passes the module eligibility API");
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(eligibleFixtureArtifact, "eligible"), false, "eligibility is not a hand-edited artifact field");
+  assert.strictEqual(eligibleFixtureArtifact.accuracy.accounts.length, 20, "the eligible fixture contains the minimum account count");
+  assert.strictEqual(eligibleFixtureArtifact.diversity.reviewerAttested, true, "the eligible fixture records diversity reviewer attestation");
+  assert.strictEqual(eligibleFixtureArtifact.provider.checks.every((check) => check.result === "pass"), true, "the eligible fixture includes passing provider evidence");
+  assert.notStrictEqual(eligibleFixtureArtifact.review.accuracy.reviewer, eligibleFixtureArtifact.review.provider.reviewer, "the fixture uses independent reviewers");
+  assert(eligibleFixtureArtifact.enablement.rollback.changeRef && eligibleFixtureArtifact.enablement.rollback.procedure, "the fixture includes tested rollback evidence");
+
+  const fixtureIneligible = fixture("certification-ineligible.json");
+  assert.strictEqual(fixtureIneligible.result.status, 2, "the structurally valid ineligible fixture exits 2");
+  assert(/payment provider certification is not passing/.test(fixtureIneligible.result.stdout), "the ineligible fixture explains its provider gate failure");
+  assert.deepStrictEqual(validator.validateArtifact(JSON.parse(fs.readFileSync(fixtureIneligible.file, "utf8"))), [], "the ineligible fixture is structurally valid");
+
+  const fixtureMalformed = fixture("certification-malformed.json");
+  assert.strictEqual(fixtureMalformed.result.status, 1, "the malformed artifact fixture exits 1");
+  assert(/CERTIFICATION ARTIFACT INVALID/.test(fixtureMalformed.result.stderr), "malformed artifact diagnostics are emitted on stderr");
+
+  const fixtureMalformedJson = fixture("certification-malformed-json.txt");
+  assert.strictEqual(fixtureMalformedJson.result.status, 1, "malformed JSON exits 1");
+  assert(/cannot read certification artifact/.test(fixtureMalformedJson.result.stderr), "malformed JSON reports a read/parse error");
+
+  const redactedFixtureText = fs.readFileSync(fixtureEligible.file, "utf8");
+  ["Jane Doe", "212-555-0100", "jane@example.test", "123 Main Street", "sk_live_", "payment credential"].forEach((secret) => {
+    assert(!redactedFixtureText.includes(secret), `fixture does not contain redaction-sensitive value ${secret}`);
+  });
+
+  const tooFewAccounts = artifact();
+  tooFewAccounts.accuracy.accounts.pop();
+  tooFewAccounts.accuracy.aggregate.usableAccounts = 19;
+  tooFewAccounts.accuracy.aggregate.supportedPeriods = 38;
+  tooFewAccounts.accuracy.aggregate.within2Periods = 37;
+  tooFewAccounts.accuracy.aggregate.shareWithin2Pct = 37 / 38 * 100;
+  ["territory", "currentPlan", "loadShape", "meter"].forEach((dimension) => {
+    const buckets = tooFewAccounts.diversity.dimensions[dimension];
+    const bucket = Object.keys(buckets).find((key) => buckets[key] === 10);
+    buckets[bucket] = 9;
+  });
+  const accountCountRun = run(tooFewAccounts);
+  assert.strictEqual(accountCountRun.result.status, 2, "a structurally valid artifact below the minimum account count exits 2");
+  assert(/fewer than 20 usable accounts/.test(accountCountRun.result.stdout), "the minimum account requirement is derived and reported");
+
+  const insufficientDiversity = artifact();
+  insufficientDiversity.diversity.dimensions = { territory: { nyc: 10, westchester: 10 } };
+  const diversityRun = run(insufficientDiversity);
+  assert.strictEqual(diversityRun.result.status, 1, "an artifact without two diverse dimensions is malformed evidence");
+  assert(/at least two dimensions/.test(diversityRun.result.stderr), "the diversity requirement is reported as a schema error");
 
   const draft = run(artifact());
   assert.strictEqual(draft.result.status, 2, "a structurally valid draft artifact is reported as not yet eligible");

@@ -1,0 +1,1 @@
+{"artifactVersion": 1, "artifactId": "cert-fixture-malformed-json-001",
