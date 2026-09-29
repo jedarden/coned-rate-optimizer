@@ -1,0 +1,103 @@
+{
+  "_comment": "Focused effective-period regression cases for SC1 Standard delivery and residential TOU supply. Expected amounts are for one calendar-month bucket.",
+  "standard": [
+    {
+      "id": "sc1-standard-2025-summer",
+      "serviceMonth": "2025-07",
+      "total": 300,
+      "expected": {
+        "scheduleEffectiveFrom": "2025-01-01",
+        "delivery": 54.9699,
+        "supply": 41.2599,
+        "nonDelivery": 5.2503,
+        "customer": 16.33,
+        "total": 117.8101,
+        "supplyRate": 0.137533
+      }
+    },
+    {
+      "id": "sc1-standard-2026-january-before-effective-date",
+      "serviceMonth": "2026-01",
+      "total": 300,
+      "expected": {
+        "scheduleEffectiveFrom": "2025-01-01",
+        "delivery": 54.9699,
+        "supply": 41.2599,
+        "nonDelivery": 5.2503,
+        "customer": 16.33,
+        "total": 117.8101,
+        "supplyRate": 0.137533
+      }
+    },
+    {
+      "id": "sc1-standard-2026-summer",
+      "serviceMonth": "2026-07",
+      "total": 300,
+      "expected": {
+        "scheduleEffectiveFrom": "2026-02-01",
+        "delivery": 50.434,
+        "supply": 41.2599,
+        "nonDelivery": 5.2503,
+        "customer": 21,
+        "total": 117.9442,
+        "supplyRate": 0.137533
+      }
+    }
+  ],
+  "tou": [
+    {
+      "id": "sc1-tou-2025-summer",
+      "serviceMonth": "2025-07",
+      "total": 100,
+      "peak": 60,
+      "off": 40,
+      "expected": {
+        "scheduleEffectiveFrom": "2025-01-01",
+        "deliveryAndSurcharges": 20.0734,
+        "supply": 20.6844,
+        "customer": 21,
+        "total": 61.7578,
+        "summerPeakSupplyRate": 0.2786,
+        "winterPeakSupplyRate": 0.1711,
+        "offPeakSupplyRate": 0.0522,
+        "gross": 1.1
+      }
+    },
+    {
+      "id": "sc1-tou-2026-winter",
+      "serviceMonth": "2026-02",
+      "total": 100,
+      "peak": 60,
+      "off": 40,
+      "expected": {
+        "scheduleEffectiveFrom": "2026-02-01",
+        "deliveryAndSurcharges": 18.1521,
+        "supply": 13.5894,
+        "customer": 21,
+        "total": 52.7415,
+        "summerPeakSupplyRate": 0.2786,
+        "winterPeakSupplyRate": 0.1711,
+        "offPeakSupplyRate": 0.0522,
+        "gross": 1.1
+      }
+    },
+    {
+      "id": "sc1-tou-2026-summer",
+      "serviceMonth": "2026-07",
+      "total": 100,
+      "peak": 60,
+      "off": 40,
+      "expected": {
+        "scheduleEffectiveFrom": "2026-02-01",
+        "deliveryAndSurcharges": 18.1521,
+        "supply": 20.6844,
+        "customer": 21,
+        "total": 59.8365,
+        "summerPeakSupplyRate": 0.2786,
+        "winterPeakSupplyRate": 0.1711,
+        "offPeakSupplyRate": 0.0522,
+        "gross": 1.1
+      }
+    }
+  ]
+}
