@@ -1,0 +1,89 @@
+{
+  "oauth": {
+    "expectedState": "fixture-state-7f5e",
+    "callbacks": [
+      {
+        "name": "matching code and state",
+        "query": "?code=fixture-code&state=fixture-state-7f5e",
+        "ok": true,
+        "code": "fixture-code"
+      },
+      {
+        "name": "missing code",
+        "query": "?state=fixture-state-7f5e",
+        "error": "missing_code"
+      },
+      {
+        "name": "missing state",
+        "query": "?code=fixture-code",
+        "error": "state_mismatch"
+      },
+      {
+        "name": "tampered state",
+        "query": "?code=fixture-code&state=attacker-state",
+        "error": "state_mismatch"
+      },
+      {
+        "name": "declined authorization",
+        "query": "?error=access_denied&error_description=customer%20declined",
+        "error": "access_denied",
+        "friendlyIncludes": "declined"
+      },
+      {
+        "name": "invalid client authorization error",
+        "query": "?error=invalid_client",
+        "error": "invalid_client",
+        "friendlyIncludes": "credentials"
+      },
+      {
+        "name": "invalid scope authorization error",
+        "query": "?error=invalid_scope",
+        "error": "invalid_scope",
+        "friendlyIncludes": "scopes"
+      },
+      {
+        "name": "provider unavailable",
+        "query": "?error=temporarily_unavailable",
+        "error": "temporarily_unavailable",
+        "friendlyIncludes": "temporarily unavailable"
+      }
+    ]
+  },
+  "connection": {
+    "accessToken": "fixture-access-token",
+    "tokenType": "Bearer",
+    "scope": "FB=4_5_6 USAGE_READ",
+    "expiresIn": 3600
+  },
+  "files": {
+    "subscription": "gbc-subscription.atom",
+    "usagePoint": "gbc-usage-point.atom",
+    "interval": "sample-greenbutton.xml",
+    "billing": "gbc-billing.atom",
+    "empty": "gbc-empty.atom",
+    "billingNoTotal": "gbc-billing-no-total.atom",
+    "malformedInterval": "gbc-malformed.xml",
+    "next": "gbc-next.atom"
+  },
+  "ids": {
+    "subscription": "77",
+    "usagePoint": "9"
+  },
+  "expected": {
+    "intervals": 72,
+    "billingEntries": 1,
+    "billingCost": 112.45,
+    "recommendationIncludes": "Stay on Standard",
+    "confidenceLevel": "medium"
+  },
+  "analytics": {
+    "events": ["sample_click", "parse_success", "parse_error"],
+    "forbiddenPayloads": [
+      "fixture-interval-reading-2025-06-01",
+      "fixture-billing-total-112.45",
+      "fixture-access-token",
+      "fixture-account-identifier",
+      "fixture.xml"
+    ]
+  }
+}

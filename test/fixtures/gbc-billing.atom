@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:espi="http://naesb.org/espi">
+  <id>https://custodian.example/espi/1_1/resource/UsagePoint/9/UsageSummary</id>
+  <title>Billing summaries</title>
+  <entry>
+    <id>https://custodian.example/espi/1_1/resource/UsageSummary/301</id>
+    <content>
+      <espi:UsageSummary>
+        <espi:billingPeriod>
+          <espi:start>1750353600</espi:start>
+          <espi:end>1752945600</espi:end>
+        </espi:billingPeriod>
+        <espi:cost>
+          <espi:currency>USD</espi:currency>
+          <espi:value>11245</espi:value>
+        </espi:cost>
+      </espi:UsageSummary>
+    </content>
+  </entry>
+</feed>

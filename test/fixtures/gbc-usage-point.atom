@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>https://custodian.example/espi/1_1/resource/Subscription/77/UsagePoint</id>
+  <title>Usage points</title>
+  <entry>
+    <id>https://custodian.example/espi/1_1/resource/UsagePoint/9</id>
+    <content><UsagePoint xmlns="http://naesb.org/espi"/></content>
+  </entry>
+</feed>

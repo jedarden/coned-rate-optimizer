@@ -29,6 +29,7 @@ node test/backtest-harness.js
 node test/certification-workflow.js
 node test/analytics-privacy.js
 node test/gbc-sandbox.js
+node test/gbc-fixtures.js
 bash -n scripts/provision-gbc-bindings.sh
 node test/gbc-production-smoke.js
 node verify.js
