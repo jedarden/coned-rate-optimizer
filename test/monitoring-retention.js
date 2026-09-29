@@ -43,6 +43,17 @@ function memoryStore() {
   };
 }
 
+function auditedStore() {
+  const values = new Map();
+  const calls = [];
+  return {
+    calls,
+    setItem: (key, value) => { calls.push(["set", key]); values.set(key, String(value)); },
+    getItem: (key) => { calls.push(["get", key]); return values.has(key) ? values.get(key) : null; },
+    removeItem: (key) => { calls.push(["remove", key]); return values.delete(key); }
+  };
+}
+
 function run(name, fn) {
   console.log(name);
   try {
@@ -145,10 +156,29 @@ run("Plan timelines and monthly restoration", () => {
          monitor.planFor(series, "2025-12") === "tou",
     "planFor resolves the plan in effect at each retained month");
   assert(JSON.stringify(monitor.segments(series).map((segment) => segment.plan)) ===
-         '["standard","tou"]' && monitor.segments(series)[0].yms.length === 2,
+    '["standard","tou"]' && monitor.segments(series)[0].yms.length === 2,
     "timeline entries form contiguous same-plan segments");
+
+  series = monitor.ingest(series, {
+    source: "gbc", label: "smart-summer", importedAt: 4, plan: "smart",
+    months: [month("2025-05", 300, 200), month("2025-06", 300, 200)]
+  });
+  series = monitor.ingest(series, {
+    source: "file", label: "standard-return", importedAt: 5, plan: "standard",
+    months: [month("2025-07", 300, 200)]
+  });
+  assert(series.timeline.length === 3 &&
+         series.timeline.map((entry) => `${entry.from}:${entry.plan}`).join(",") ===
+           "2025-03:tou,2025-05:smart,2025-07:standard" &&
+         monitor.planFor(series, "2025-04") === "tou" &&
+         monitor.planFor(series, "2025-06") === "smart" &&
+         monitor.planFor(series, "2025-08") === "standard",
+    "multiple declared plan switches remain ordered and resolve for later months");
+  assert(JSON.stringify(monitor.segments(series).map((segment) => segment.plan)) ===
+    '["standard","tou","smart","standard"]',
+    "plan-switch history produces one segment for each contiguous plan period");
   const restored = monitor.restoreParsed(series);
-  assert(restored.hours.length === 0 && restored.ndays === 120,
+  assert(restored.hours.length === 0 && restored.ndays === 210,
     "restoration keeps monthly summaries and observed days, never hourly readings");
 });
 
@@ -188,7 +218,19 @@ run("Recheck fingerprints and local deletion", () => {
   const store = memoryStore();
   monitor.save(series, store);
   assert(monitor.load(store).months.length === 1, "the retained series round-trips through localStorage");
+  const audited = auditedStore();
+  audited.setItem("unrelated-local-data", "keep me");
+  monitor.save(series, audited);
+  monitor.load(audited);
   monitor.clear(store);
+  monitor.clear(audited);
+  assert(store.getItem(monitor.KEY) === null && monitor.load(store) === null &&
+         audited.getItem("unrelated-local-data") === "keep me" &&
+         audited.calls.filter((call) => call[1] !== monitor.KEY && call[1] !== "unrelated-local-data").length === 0,
+    "deletion removes only the monitoring key and leaves unrelated localStorage data alone");
+  assert(audited.calls.filter((call) => call[1] === monitor.KEY).map((call) => call[0]).join(",") ===
+    "set,get,remove",
+    "monitor persistence uses localStorage operations on its single documented key");
   assert(store.getItem(monitor.KEY) === null && monitor.load(store) === null,
     "deletion removes the complete monitoring record immediately");
 });
@@ -280,11 +322,18 @@ run("Sample exclusion, raw-data exclusion, and no-network guarantee", () => {
     "monitor.js has no network API path");
   const oldFetch = global.fetch;
   const oldXHR = global.XMLHttpRequest;
+  const oldNavigator = global.navigator;
   const hadLocalStorage = Object.prototype.hasOwnProperty.call(global, "localStorage");
   const oldLocalStorage = global.localStorage;
   let networkCalls = 0;
+  const networkArguments = [];
   global.fetch = () => { networkCalls++; throw new Error("unexpected monitoring network call"); };
-  global.XMLHttpRequest = function () { networkCalls++; throw new Error("unexpected monitoring network call"); };
+  global.XMLHttpRequest = function () { networkCalls++; networkArguments.push(Array.from(arguments)); throw new Error("unexpected monitoring network call"); };
+  global.navigator = { sendBeacon: function () {
+    networkCalls++;
+    networkArguments.push(Array.from(arguments));
+    throw new Error("unexpected monitoring network call");
+  } };
   global.localStorage = store;
   try {
     monitor.save(series);
@@ -293,9 +342,11 @@ run("Sample exclusion, raw-data exclusion, and no-network guarantee", () => {
   } finally {
     if (oldFetch === undefined) delete global.fetch; else global.fetch = oldFetch;
     if (oldXHR === undefined) delete global.XMLHttpRequest; else global.XMLHttpRequest = oldXHR;
+    if (oldNavigator === undefined) delete global.navigator; else global.navigator = oldNavigator;
     if (hadLocalStorage) global.localStorage = oldLocalStorage; else delete global.localStorage;
   }
-  assert(networkCalls === 0, "default localStorage save/load/delete performs no network I/O");
+  assert(networkCalls === 0 && networkArguments.every((args) => !JSON.stringify(args).includes(secret)),
+    "default localStorage save/load/delete performs no network I/O or retained-data transmission");
 });
 
 console.log(`Monitoring tests: ${passed} passed, ${failed} failed`);
