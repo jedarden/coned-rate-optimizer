@@ -59,9 +59,12 @@
     "subscription": "gbc-subscription.atom",
     "usagePoint": "gbc-usage-point.atom",
     "interval": "sample-greenbutton.xml",
+    "imported": "sample-greenbutton.csv",
     "billing": "gbc-billing.atom",
+    "coveredBilling": "gbc-billing-covered.atom",
     "empty": "gbc-empty.atom",
     "billingNoTotal": "gbc-billing-no-total.atom",
+    "unauthorized": "gbc-unauthorized.json",
     "malformedInterval": "gbc-malformed.xml",
     "next": "gbc-next.atom"
   },
@@ -73,6 +76,7 @@
     "intervals": 72,
     "billingEntries": 1,
     "billingCost": 112.45,
+    "coveredBillCost": 10.54,
     "recommendationIncludes": "Stay on Standard",
     "confidenceLevel": "medium"
   },

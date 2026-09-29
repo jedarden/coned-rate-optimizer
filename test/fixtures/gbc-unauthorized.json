@@ -1,0 +1,4 @@
+{
+  "error": "invalid_token",
+  "error_description": "the fixture authorization has been revoked"
+}

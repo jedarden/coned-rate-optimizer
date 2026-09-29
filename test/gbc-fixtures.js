@@ -91,12 +91,14 @@ async function startFixtureOrigins() {
       "/espi/1_1/resource/Subscription/77/UsagePoint": feeds.usagePoint,
       "/espi/1_1/resource/Batch/UsagePoint/9": feeds.interval,
       "/espi/1_1/resource/UsagePoint/9/UsageSummary": feeds.billing,
+      "/valid/covered-billing": feeds.coveredBilling,
       "/failure/empty-subscription": feeds.empty,
       "/failure/empty-usage-point": feeds.empty,
       "/failure/malformed-interval": feeds.malformedInterval,
       "/failure/incomplete-billing": feeds.billingNoTotal
     };
     if (u.pathname === "/failure/http") return response(res, 503, JSON.stringify({ error: "fixture_unavailable" }));
+    if (u.pathname === "/failure/unauthorized") return response(res, 401, feeds.unauthorized);
     if (!(u.pathname in routes)) return response(res, 404, JSON.stringify({ error: "not_found" }));
     if (req.headers.authorization !== `Bearer ${flow.connection.accessToken}`) {
       return response(res, 401, JSON.stringify({ error: "invalid_token" }));
@@ -132,6 +134,71 @@ function config(origins, paths) {
     scopes: ["FB=4_5_6", "USAGE_READ"],
     tokenExchangePath: origins.appOrigin + "/api/gbc/token"
   }, paths || {}));
+}
+
+function rounded(value) {
+  return Math.round(value * 1e8) / 1e8;
+}
+
+function parsedShape(parsed) {
+  return {
+    intervals: parsed.intervals,
+    ndays: parsed.ndays,
+    totalKwh: rounded(parsed.totalKwh),
+    months: parsed.months.map((month) => ({
+      ym: month.ym,
+      total: rounded(month.total),
+      peak: rounded(month.peak),
+      off: rounded(month.off),
+      ndays: month.ndays
+    })),
+    hours: parsed.hours.map((hour) => ({
+      ym: hour.ym,
+      mo: hour.mo,
+      day: hour.day,
+      hour: hour.hour,
+      weekday: hour.weekday,
+      kwh: rounded(hour.kwh)
+    }))
+  };
+}
+
+function analysisShape(analysis) {
+  return {
+    recommendation: analysis.recommendation,
+    standardCost: rounded(analysis.standardCost),
+    touCost: rounded(analysis.touCost),
+    totalKwh: rounded(analysis.totalKwh),
+    confidence: analysis.confidence,
+    comparison: analysis.comparison.map((plan) => ({
+      key: plan.key,
+      current: plan.current,
+      estimate: plan.estimate,
+      avail: plan.avail,
+      cost: rounded(plan.cost),
+      annualCost: rounded(plan.annualCost),
+      deltaAnnual: rounded(plan.deltaAnnual)
+    })),
+    reconciliation: {
+      complete: analysis.reconciliation.complete,
+      incomplete: analysis.reconciliation.incomplete,
+      unsupported: analysis.reconciliation.unsupported,
+      rows: analysis.reconciliation.rows.map((row) => ({
+        label: row.label,
+        kwh: rounded(row.kwh),
+        observedDays: row.observedDays,
+        billDays: row.billDays,
+        supported: row.supported,
+        band: row.band,
+        pctError: rounded(row.pctError)
+      })),
+      gate: analysis.reconciliation.gate && {
+        gate: analysis.reconciliation.gate.gate,
+        periods: analysis.reconciliation.gate.periods,
+        within2: analysis.reconciliation.gate.within2
+      }
+    }
+  };
 }
 
 async function run() {
@@ -203,9 +270,12 @@ async function run() {
       "Atom rel=next fixture decodes XML entities");
 
     const parsedInterval = calc.parseESPI(feeds.interval);
+    const parsedImport = calc.parseGreenButton(feeds.imported);
     const parsedBilling = calc.parseBillingESPI(feeds.billing);
     check(parsedInterval.intervals === flow.expected.intervals,
       `ESPI interval fixture parses into ${parsedInterval.intervals} readings`);
+    check(JSON.stringify(parsedShape(parsedInterval)) === JSON.stringify(parsedShape(parsedImport)),
+      "the ESPI interval fixture normalizes to the equivalent imported CSV shape");
     check(parsedBilling.bills.length === flow.expected.billingEntries &&
       parsedBilling.bills[0].cost === flow.expected.billingCost,
     "UsageSummary fixture parses the USD minor-unit total into a bill");
@@ -226,6 +296,23 @@ async function run() {
       analysis.confidence.level === flow.expected.confidenceLevel,
       "successful fixture import produces the expected rendered verdict and confidence label");
 
+    const covered = await gbc.refreshFeeds(config(origins, { billingFeedPath: "/valid/covered-billing" }), connection);
+    const coveredImportBill = calc.parseBillingESPI(feeds.coveredBilling).bills;
+    const importedAnalysis = calc.analyze(parsedImport, { bills: coveredImportBill });
+    const connectedAnalysis = calc.analyze(covered.parsed, { bills: covered.bills });
+    check(covered.bills.length === 1 && covered.bills[0].cost === flow.expected.coveredBillCost,
+      "covered UsageSummary fixture normalizes its USD total into one bill");
+    check(covered.parsed.intervals === flow.expected.intervals &&
+      covered.intervalXml === feeds.interval && covered.billingXml === feeds.coveredBilling,
+      "covered feed retrieval keeps the connected interval and billing payloads intact");
+    check(connectedAnalysis.reconciliation.rows.length === 1 &&
+      connectedAnalysis.reconciliation.rows[0].supported === true &&
+      connectedAnalysis.reconciliation.gate.gate === "pass" &&
+      connectedAnalysis.confidence.reasons.some((reason) => reason.includes("accuracy gate")),
+    "interval coverage reaches bill reconstruction and passes the connected accuracy gate");
+    check(JSON.stringify(analysisShape(connectedAnalysis)) === JSON.stringify(analysisShape(importedAnalysis)),
+      "connected ESPI analysis matches the equivalent imported CSV and billing data");
+
     console.log("\n4. Feed failure fixtures");
     const undiscovered = () => {
       const fresh = Object.assign({}, connection);
@@ -239,6 +326,8 @@ async function run() {
       /no usage point/, "empty usage-point feed fails with actionable guidance");
     await rejects(gbc.refreshFeeds(config(origins, { intervalFeedPath: "/failure/http" }), undiscovered()),
       /data request failed \(HTTP 503\)/, "HTTP feed failure is surfaced without a parser stack trace");
+    await rejects(gbc.refreshFeeds(config(origins, { intervalFeedPath: "/failure/unauthorized" }), connection),
+      /authorization has expired.*reconnect/, "a 401 authorization response fails with reconnect guidance");
     const incomplete = await gbc.refreshFeeds(config(origins, { billingFeedPath: "/failure/incomplete-billing" }), connection);
     check(incomplete.parsed.intervals === flow.expected.intervals && incomplete.bills.length === 0 &&
       incomplete.billingIncomplete === 1 && incomplete.billingError === null,
