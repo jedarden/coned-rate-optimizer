@@ -73,13 +73,28 @@ async function run() {
       stripeCall = { url, init };
       return response({ id: "cs_fixture", url: "https://checkout.stripe.test/session" });
     };
-    const made = await create.onRequestPost({
+    const foreignCreate = await create.onRequestPost({
+      request: request("https://app.test/api/checkout/create", "POST", { product: "report", policyVersion: 1 }, "https://evil.test"),
+      env: baseEnv
+    });
+    assert.strictEqual(foreignCreate.status, 403, "cross-origin create is rejected before contacting Stripe");
+    assert.strictEqual(stripeCall, undefined, "cross-origin create never reaches the provider");
+
+    const contaminated = await create.onRequestPost({
       request: request("https://app.test/api/checkout/create", "POST", {
         product: "report", policyVersion: 1,
         amount: 0, currency: "eur", accountId: "acct_private",
         usage: { intervals: [{ start: "2026-01-01T00:00:00-05:00", kwh: 999 }] },
         billing: { total: 99999, periods: [{ start: "2026-01-01", end: "2026-02-01" }] }
       }), env: baseEnv
+    });
+    assert.strictEqual(contaminated.status, 400,
+      "the create endpoint rejects usage, billing, account, and caller-supplied pricing fields");
+    assert.strictEqual(stripeCall, undefined, "contaminated create input never reaches the provider");
+
+    const made = await create.onRequestPost({
+      request: request("https://app.test/api/checkout/create", "POST", { product: "report", policyVersion: 1 }),
+      env: baseEnv
     });
     assert.strictEqual(made.status, 200, "certified provider creates hosted checkout");
     const stripeForm = new URLSearchParams(stripeCall.init.body);
@@ -94,6 +109,8 @@ async function run() {
     assert.strictEqual(stripeForm.get("line_items[0][quantity]"), "1", "the fixed report quantity is sent");
     assert.strictEqual(stripeForm.get("line_items[0][price_data][currency]"), "usd", "checkout currency is fixed to USD");
     assert.strictEqual(stripeForm.get("line_items[0][price_data][unit_amount]"), "2900", "the server sends the fixed $29 report price");
+    assert.strictEqual(stripeForm.get("line_items[0][price_data][product_data][name]"),
+      "ConEd Rate Optimizer self-service report", "the checkout product name is fixed");
     assert.strictEqual(stripeForm.get("metadata[product]"), "report", "checkout metadata names only the report product");
     assert.strictEqual(stripeForm.get("metadata[amount_cents]"), "2900", "checkout metadata carries the fixed amount");
     assert.strictEqual(stripeForm.get("metadata[policy_version]"), "1", "checkout metadata carries the fixed policy version");
@@ -146,6 +163,11 @@ async function run() {
       "the hosted provider URL is handed to the browser");
     assert.deepStrictEqual(JSON.parse(browserRequests[0].init.body), { product: "report", policyVersion: 1 },
       "the composed browser-to-server request has exactly product and policyVersion");
+    assert.strictEqual(browserRequests[0].init.method, "POST", "create uses POST");
+    assert.strictEqual(browserRequests[0].init.body.includes("acct_private"), false,
+      "account data is absent from the composed browser request");
+    assert.strictEqual(browserRequests[0].init.body.includes("intervals"), false,
+      "usage data is absent from the composed browser request");
     assert.strictEqual(browserRequests[0].init.body.includes("99999"), false,
       "billing data is absent from the composed browser request");
 
@@ -163,6 +185,11 @@ async function run() {
     browserLocation.search = "?checkout=success&session_id=cs_fixture";
     const verifiedReturn = await hosted.resume();
     assert.strictEqual(verifiedReturn.status, "succeeded", "the browser return uses the verified session outcome");
+    assert.strictEqual(browserRequests[1].url.toString(),
+      "https://app.test/api/checkout/session?session_id=cs_fixture",
+    "return verification sends only the provider session id");
+    assert.strictEqual(browserRequests[1].init.method, "GET", "return verification uses GET");
+    assert.strictEqual(browserRequests[1].init.body, undefined, "return verification has no request body");
     endToEndFlow = calc.paymentTransition(endToEndFlow, "checkout_succeeded", {}, { now: 1700000000000 });
     assert.strictEqual(endToEndFlow.state, "paid", "only the verified hosted session unlocks the report");
     assert.strictEqual(browserRequests.length, 2, "the composed flow makes one create and one verify request");
@@ -203,17 +230,25 @@ async function run() {
       assert.strictEqual(forwarded, false, "invalid checkout input is rejected before contacting Stripe");
     }
 
-    global.fetch = async () => response(validSession);
+    let providerSessionRequest;
+    global.fetch = async (url, init) => {
+      providerSessionRequest = { url, init };
+      return response(validSession);
+    };
     const verified = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
     assert.strictEqual(verified.status, 200, "a paid matching session verifies successfully");
     assert.deepStrictEqual(await verified.json(), { status: "succeeded", sessionId: "cs_fixture" },
       "successful verification returns only the unlock decision and session id");
+    assert.strictEqual(providerSessionRequest.url,
+      "https://api.stripe.com/v1/checkout/sessions/cs_fixture", "verification fetches only the requested provider session");
+    assert.strictEqual(providerSessionRequest.init.body, undefined, "verification sends no provider request body");
 
     global.fetch = async () => response(Object.assign({}, validSession, { status: "expired", payment_status: "unpaid" }));
     const expired = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
     assert.strictEqual((await expired.json()).status, "cancelled", "an expired hosted session is cancelled, not paid");
 
     const identityMismatches = [
+      ["session id", (s) => { s.id = "cs_other"; }],
       ["payment mode", (s) => { s.mode = "subscription"; }],
       ["product metadata", (s) => { s.metadata.product = "concierge"; }],
       ["amount metadata", (s) => { s.metadata.amount_cents = "1"; }],
@@ -245,6 +280,21 @@ async function run() {
     global.fetch = async () => response(validSession);
     const matchingSession = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
     assert.strictEqual(matchingSession.status, 200, "a matching completed session remains verifiable");
+
+    global.fetch = async () => { throw new Error("cross-origin request must not reach provider"); };
+    const foreignSession = await session.onRequestGet({
+      request: request("https://app.test/api/checkout/session?session_id=cs_fixture", "GET", undefined, "https://evil.test"),
+      env: baseEnv
+    });
+    assert.strictEqual(foreignSession.status, 403, "cross-origin return verification is rejected before contacting Stripe");
+
+    global.fetch = async () => { throw new Error("provider must not be called"); };
+    const contaminatedReturn = await session.onRequestGet({
+      request: request("https://app.test/api/checkout/session?session_id=cs_fixture&accountId=acct_private&usage=intervals&billing=99999"),
+      env: baseEnv
+    });
+    assert.strictEqual(contaminatedReturn.status, 400,
+      "return verification rejects account, usage, and billing query parameters");
 
     const pendingProvider = checkoutProvider({
       location: { search: "?checkout=success&session_id=cs_fixture", assign() {} },

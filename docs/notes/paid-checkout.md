@@ -20,10 +20,12 @@ message.
 `public/checkout.js` is the browser adapter for Stripe-hosted Checkout. It
 sends only `{ product: "report", policyVersion }` to
 `/api/checkout/create`; the Pages Function accepts policy version `1` and
-creates a session with a fixed `2900`-cent USD line item. Card data is handled
+rejects any extra request fields before creating a session with a fixed
+`2900`-cent USD line item. Card data is handled
 by Stripe. On return, `/api/checkout/session` verifies the session server-side,
-including payment mode, product, policy metadata, currency, amount,
-completion, and payment status, before the browser unlocks the report. A
+including the provider session id, payment mode, product, policy metadata,
+currency, amount, completion, and payment status, before the browser unlocks
+the report. It accepts only the provider session id as a query parameter. A
 success query parameter alone never unlocks anything.
 
 The validator rejects any runtime policy whose report price is not exactly $29.
@@ -40,6 +42,19 @@ collection:
 - `STRIPE_SECRET_KEY`
 - `REPORT_CHARGING_CERTIFIED=true`
 - `PAYMENT_PROVIDER_CERTIFIED=true`
+
+Before either flag is enabled, the release owner must attach the exact
+candidate commit and policy version to a redacted certification artifact, run
+the complete definition of done plus `node test/checkout.js` from a clean
+archive, and obtain separate accuracy and provider approvals. The provider
+review must record the fixed-price, request-boundary, return-verification,
+origin, cancellation, pending, failure, and bounded-retry checks. Only after
+that review may the client flags be changed; deploy that client change while
+the server bindings remain disabled, then enable both server bindings
+together and run a synthetic $29 create-and-verify probe. If the probe or
+monitoring fails, disable both server bindings first and revert the client
+flags using the recorded rollback reference. The free result must remain
+available throughout.
 
 The client-side policy flags and server-side bindings are intentionally both
 required. Missing or failed checkout returns to the free result; cancellation

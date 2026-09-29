@@ -25,7 +25,12 @@ export async function onRequestGet({ request, env }) {
   if (!enabled(env)) {
     return json(503, { code: "provider_unavailable", message: "checkout is not certified for this deployment" });
   }
-  const id = new URL(request.url).searchParams.get("session_id") || "";
+  const params = new URL(request.url).searchParams;
+  const queryKeys = Array.from(params.keys());
+  const id = params.get("session_id") || "";
+  if (queryKeys.length !== 1 || queryKeys[0] !== "session_id") {
+    return json(400, { code: "invalid_request", message: "only a checkout session id is accepted" });
+  }
   if (!/^cs_[A-Za-z0-9_]+$/.test(id)) {
     return json(400, { code: "invalid_request", message: "a valid checkout session id is required" });
   }
@@ -41,7 +46,7 @@ export async function onRequestGet({ request, env }) {
   let session;
   try { session = await upstream.json(); }
   catch (e) { return json(502, { code: "provider_malformed", message: "the payment provider returned an invalid response" }); }
-  if (!upstream.ok || !session || session.mode !== "payment" || !session.metadata ||
+  if (!upstream.ok || !session || session.id !== id || session.mode !== "payment" || !session.metadata ||
       session.metadata.product !== "report" || session.metadata.amount_cents !== String(REPORT_CENTS) ||
       session.metadata.policy_version !== String(REPORT_POLICY_VERSION) ||
       session.amount_total !== REPORT_CENTS || session.currency !== "usd") {

@@ -32,7 +32,10 @@ export async function onRequestPost({ request, env }) {
   let body;
   try { body = await request.json(); }
   catch (e) { return json(400, { code: "invalid_request", message: "checkout request must be JSON" }); }
-  if (!body || body.product !== "report" || body.policyVersion !== REPORT_POLICY_VERSION) {
+  const bodyKeys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      bodyKeys.length !== 2 || !bodyKeys.includes("product") || !bodyKeys.includes("policyVersion") ||
+      body.product !== "report" || body.policyVersion !== REPORT_POLICY_VERSION) {
     return json(400, { code: "ineligible", message: "only the self-service report can be purchased" });
   }
 
