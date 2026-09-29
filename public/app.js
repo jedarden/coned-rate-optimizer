@@ -64,13 +64,27 @@
   // The declared facts the eligibility engine gates on (all optional; calc.js defaults apply
   // to anything unset). Everything stays on-device like the rest of the analysis.
   function profileOptions() {
+    var numberValue = function (id) {
+      var el = $(id), value = el && el.value.trim();
+      if (!value) return undefined;
+      var n = Number(value);
+      return isFinite(n) && n >= 0 ? n : undefined;
+    };
+    var planHistory = {};
+    var currentPlanMonths = numberValue("pf-plan-months");
+    var lastPlan = $("pf-last-plan") ? $("pf-last-plan").value : "";
+    var monthsSinceExit = numberValue("pf-months-since-exit");
+    if (currentPlanMonths !== undefined) planHistory.currentPlanMonths = currentPlanMonths;
+    if (lastPlan) planHistory.lastPlan = lastPlan;
+    if (monthsSinceExit !== undefined) planHistory.monthsSinceExit = monthsSinceExit;
     return {
       territory: $("pf-territory") ? $("pf-territory").value : undefined,
       currentPlan: $("pf-plan") ? $("pf-plan").value : undefined,
       meter: $("pf-meter") ? $("pf-meter").value : undefined,
       solar: !!( $("pf-solar") && $("pf-solar").checked ),
       esco: !!( $("pf-esco") && $("pf-esco").checked ),
-      heatPump: !!( $("pf-heatpump") && $("pf-heatpump").checked )
+      heatPump: !!( $("pf-heatpump") && $("pf-heatpump").checked ),
+      planHistory: planHistory
     };
   }
 
@@ -817,7 +831,7 @@
     if (!M || !series) return;
     try { series.profile = profileOptions(); M.save(series); } catch (e) { /* a failed profile write keeps the last saved state */ }
   }
-  ["pf-territory", "pf-plan", "pf-meter"].forEach(function (id) {
+  ["pf-territory", "pf-plan", "pf-meter", "pf-plan-months", "pf-last-plan", "pf-months-since-exit"].forEach(function (id) {
     var el = $(id); if (el) el.addEventListener("change", function () {
       resetPaymentFlow();
       persistProfile();
@@ -882,6 +896,10 @@
       var p = storedSeries.profile || {};
       var setSel = function (id, v) { var el = $(id); if (el && v !== undefined && v !== null) el.value = v; };
       setSel("pf-territory", p.territory); setSel("pf-plan", p.currentPlan); setSel("pf-meter", p.meter);
+      var history = p.planHistory || {};
+      setSel("pf-plan-months", history.currentPlanMonths);
+      setSel("pf-last-plan", history.lastPlan);
+      setSel("pf-months-since-exit", history.monthsSinceExit);
       ["solar", "esco", "heatpump"].forEach(function (k) {
         var el = $("pf-" + k); if (el && p[k] !== undefined && p[k] !== null) el.checked = !!p[k];
       });

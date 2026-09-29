@@ -670,6 +670,13 @@ async function runFormatTests() {
     assert(normalized.profile.currentPlan === "steady" && normalized.profile.solar === false &&
            normalized.profile.esco === true && normalized.profile.heatPump === false,
       "eligibility profile normalization accepts plan aliases and does not treat string false as true");
+    const mappedHistory = calc.checkEligibility({
+      planHistory: { monthsSinceOptOut: { tou: "6" } }
+    }, { hasDemand: true });
+    assert(mappedHistory.profile.planHistory.monthsSinceOptOut.tou === 6 &&
+           mappedHistory.verdicts.tou.available === false &&
+           mappedHistory.verdicts.tou.reason.includes("18 months"),
+      "plan-history normalization accepts per-plan opt-out ages and exposes the re-enrollment reason");
     console.log("");
   } catch (e) {
     console.log(`  ✗ Eligibility matrix tests failed: ${e.message}`);
@@ -1809,6 +1816,7 @@ try {
     profile: {
       territory: "nyc", currentPlan: "standard", meter: "smart",
       solar: false, esco: false, heatPump: false,
+      planHistory: {lastPlan: "tou", monthsSinceExit: 2},
       accountId: secret, usagePointId: secret, token: secret,
       sampleData: sampleMarker
     }
@@ -1819,8 +1827,11 @@ try {
   assert(mon.restoreParsed(privacySeries).hours.length === 0,
     "restoring monitoring data never recreates hourly interval readings");
   assert(JSON.stringify(Object.keys(privacySeries.profile).sort()) ===
-         '["currentPlan","esco","heatPump","meter","solar","territory"]',
-    "only the six documented eligibility facts are retained in the profile");
+         '["currentPlan","esco","heatPump","meter","planHistory","solar","territory"]',
+    "only the documented eligibility facts and bounded plan history are retained in the profile");
+  assert(privacySeries.profile.planHistory.lastPlan === "tou" &&
+         privacySeries.profile.planHistory.monthsSinceExit === 2,
+    "bounded plan history survives monitoring persistence");
 
   const privacyStore = memStore();
   mon.save(privacySeries, privacyStore);

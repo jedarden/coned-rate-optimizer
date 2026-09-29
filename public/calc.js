@@ -1194,6 +1194,81 @@
     smartenergy: "smart"
   };
 
+  function normalizePlanKey(value) {
+    if (value === undefined || value === null || value === "") return null;
+    var key = String(value).toLowerCase().replace(/\s+/g, "");
+    return PLAN_ALIASES[key] || (PLAN_KEYS.indexOf(key) !== -1 ? key : null);
+  }
+
+  function normalizeMonths(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value === "string" && value.trim() === "") return null;
+    var months = typeof value === "number" ? value : Number(value);
+    return isFinite(months) && months >= 0 ? months : null;
+  }
+
+  function firstDefined(obj, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      if (obj && obj[keys[i]] !== undefined && obj[keys[i]] !== null && obj[keys[i]] !== "") return obj[keys[i]];
+    }
+    return null;
+  }
+
+  // Lock-in is based on facts a customer may know without sharing account data:
+  // how long they have been on the current plan and, if they recently left one,
+  // which plan they left and how many months ago. The per-plan map accepts direct
+  // API callers that know the plan-specific fact as well as the compact UI shape.
+  // Unknown history is deliberately left unknown; it must not silently become a
+  // lock-in exclusion.
+  function normalizePlanHistory(raw, root) {
+    raw = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    root = root && typeof root === "object" ? root : {};
+    var currentMonths = normalizeMonths(firstDefined(raw,
+      ["currentPlanMonths", "monthsOnCurrentPlan", "monthsEnrolled"]));
+    if (currentMonths === null) currentMonths = normalizeMonths(firstDefined(root,
+      ["currentPlanMonths", "monthsOnCurrentPlan", "monthsEnrolled"]));
+    var lastPlan = normalizePlanKey(firstDefined(raw,
+      ["lastPlan", "previousPlan", "priorPlan", "lastOptedOutPlan"]));
+    if (!lastPlan) lastPlan = normalizePlanKey(firstDefined(root,
+      ["lastPlan", "previousPlan", "priorPlan", "lastOptedOutPlan"]));
+    var monthsSinceExit = normalizeMonths(firstDefined(raw,
+      ["monthsSinceExit", "monthsSinceLastPlan", "monthsSinceOptOut"]));
+    if (monthsSinceExit === null) monthsSinceExit = normalizeMonths(firstDefined(root,
+      ["monthsSinceExit", "monthsSinceLastPlan", "monthsSinceOptOut"]));
+    var monthsSinceOptOut = {};
+
+    PLAN_KEYS.forEach(function (key) {
+      var aliases = key === "tou" ? ["touMonthsSinceOptOut", "touOptedOutMonthsAgo", "touMonthsSinceExit"]
+        : key === "steady" ? ["steadyMonthsSinceOptOut", "steadyOptedOutMonthsAgo", "steadyMonthsSinceExit"]
+        : key === "smart" ? ["smartMonthsSinceOptOut", "smartOptedOutMonthsAgo", "smartMonthsSinceExit"] : [];
+      var entry = raw[key];
+      var value = entry && typeof entry === "object"
+        ? firstDefined(entry, ["monthsSinceOptOut", "monthsSinceExit", "monthsSinceLastPlan", "optedOutMonthsAgo"])
+        : entry;
+      value = normalizeMonths(value);
+      if (value === null) {
+        var mapped = raw.monthsSinceOptOut && typeof raw.monthsSinceOptOut === "object" ? raw.monthsSinceOptOut : null;
+        value = normalizeMonths(firstDefined(mapped, [key]));
+      }
+      if (value === null) value = normalizeMonths(firstDefined(raw, aliases));
+      if (value === null) {
+        var rootMapped = root.monthsSinceOptOut && typeof root.monthsSinceOptOut === "object" ? root.monthsSinceOptOut : null;
+        value = normalizeMonths(firstDefined(rootMapped, [key]));
+      }
+      if (value === null) value = normalizeMonths(firstDefined(root, aliases));
+      if (value !== null) monthsSinceOptOut[key] = value;
+    });
+    if (lastPlan && monthsSinceExit !== null && monthsSinceOptOut[lastPlan] === undefined)
+      monthsSinceOptOut[lastPlan] = monthsSinceExit;
+
+    return {
+      currentPlanMonths: currentMonths,
+      lastPlan: lastPlan,
+      monthsSinceExit: monthsSinceExit,
+      monthsSinceOptOut: monthsSinceOptOut
+    };
+  }
+
   function normalizeBoolean(value, fallback) {
     if (typeof value === "boolean") return value;
     if (typeof value === "string") {
@@ -1219,6 +1294,7 @@
     if (p.meter !== "smart" && p.meter !== "legacy") p.meter = "legacy";
     p.currentPlan = PLAN_ALIASES[p.currentPlan] || p.currentPlan;
     if (PLAN_KEYS.indexOf(p.currentPlan) === -1) p.currentPlan = "standard";
+    p.planHistory = normalizePlanHistory(raw.planHistory || raw.history, raw);
     return p;
   }
 
@@ -1231,6 +1307,25 @@
     if (r.basis === "demand" && !ctx.hasDemand)
       return "requires a smart meter's hourly interval data — your file has none, so it can't even be estimated";
     return null;
+  }
+
+  function historyOptOutMonths(profile, key) {
+    var history = profile.planHistory || {};
+    if (history.monthsSinceOptOut && history.monthsSinceOptOut[key] !== undefined)
+      return history.monthsSinceOptOut[key];
+    return history.lastPlan === key ? history.monthsSinceExit : null;
+  }
+
+  function planHistoryReason(key, profile) {
+    var months = historyOptOutMonths(profile, key), r = planRates(key);
+    var lockIn = r.lockIn || {};
+    if (months === null || months === undefined || !lockIn.reenrollBlockMonths || months >= lockIn.reenrollBlockMonths)
+      return null;
+    var remaining = lockIn.reenrollBlockMonths - months;
+    var unit = remaining === 1 ? "month" : "months";
+    var label = key === "tou" ? (r.name || r.short || key) : (r.short || r.name || key);
+    return "can't re-enroll in " + label + " for " + lockIn.reenrollBlockMonths +
+      " months after opting out (" + months + " months ago; " + remaining + " " + unit + " remaining)";
   }
 
   // The pure rule check. ctx: { hasDemand: interval hours present, smartCharge: EV what-if on }.
@@ -1271,6 +1366,32 @@
 
     // -- current plan: it stays visible as your baseline, but is never a switch candidate
     verdicts[profile.currentPlan].notes.push("You're already on this plan — shown as your baseline, not a switch option.");
+
+    // -- history: TOU's minimum stay applies while leaving the current plan; each
+    //    plan's re-enrollment block applies only to a plan the customer recently
+    //    left. The current plan remains visible as the baseline even if the facts
+    //    supplied are contradictory, but no unavailable plan can be recommended.
+    var currentHistory = profile.planHistory || {};
+    var currentLockIn = planRates(profile.currentPlan).lockIn || {};
+    if (profile.currentPlan === "tou" && !profile.esco && currentHistory.currentPlanMonths !== null &&
+        currentHistory.currentPlanMonths < (currentLockIn.minStayMonths || 0)) {
+      var stayMonths = currentLockIn.minStayMonths;
+      each(function (key, v) {
+        if (key !== profile.currentPlan && v.available)
+          v.available = false;
+        if (key !== profile.currentPlan && !v.reason)
+          v.reason = "TOU requires a " + stayMonths + "-month minimum stay before switching plans (" +
+            currentHistory.currentPlanMonths + " months enrolled)";
+      });
+      verdicts.tou.notes.push("You have been on TOU for " + currentHistory.currentPlanMonths +
+        " months; the one-year minimum stay still applies before switching (unless ESCO-supplied).");
+    }
+
+    each(function (key, v) {
+      if (v.current || !v.available) return;
+      var reason = planHistoryReason(key, profile);
+      if (reason) { v.available = false; v.reason = reason; }
+    });
 
     // -- solar: ConEd's own guidance is advisory ("not a good fit" / "do not recommend"), so
     //    these are notes rather than exclusions — the customer knows their setup best.

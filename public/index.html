@@ -120,12 +120,29 @@
               <option value="legacy">Traditional</option>
             </select>
           </label>
+          <label>Months on current plan
+            <input id="pf-plan-months" type="number" min="0" step="1" inputmode="numeric" placeholder="unknown" />
+          </label>
         </div>
         <div class="profile-checks">
           <label><input type="checkbox" id="pf-solar" /> Solar / net metering</label>
           <label><input type="checkbox" id="pf-esco" /> ESCO supplies my power</label>
           <label><input type="checkbox" id="pf-heatpump" /> Heat pump</label>
         </div>
+        <div class="profile-grid profile-history">
+          <label>Plan most recently left
+            <select id="pf-last-plan">
+              <option value="">None / unknown</option>
+              <option value="tou">Time-of-Use</option>
+              <option value="steady">Steady Use</option>
+              <option value="smart">Smart Energy</option>
+            </select>
+          </label>
+          <label>Months since leaving
+            <input id="pf-months-since-exit" type="number" min="0" step="1" inputmode="numeric" placeholder="unknown" />
+          </label>
+        </div>
+        <p class="legend profile-history-help">Optional history enforces TOU’s one-year minimum and each plan’s 18-month re-enrollment block. Leave a value blank when you do not know it.</p>
       </div>
       <p id="error" class="error" hidden></p>
       <details class="howto">

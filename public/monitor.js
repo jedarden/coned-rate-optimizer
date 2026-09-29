@@ -35,8 +35,26 @@
 
   function oneOf(value, values) { return values.indexOf(value) >= 0 ? value : null; }
 
+  function nonNegativeNumber(value) {
+    var n = typeof value === "number" ? value : Number(value);
+    return isFinite(n) && n >= 0 ? n : null;
+  }
+
+  function safePlanHistory(history) {
+    if (!history || typeof history !== "object" || Array.isArray(history)) return null;
+    var out = {};
+    var current = nonNegativeNumber(history.currentPlanMonths);
+    var last = oneOf(history.lastPlan, PROFILE_ENUMS.currentPlan);
+    var since = nonNegativeNumber(history.monthsSinceExit);
+    if (current !== null) out.currentPlanMonths = current;
+    if (last) out.lastPlan = last;
+    if (since !== null) out.monthsSinceExit = since;
+    return Object.keys(out).length ? out : null;
+  }
+
   // The profile is eligibility input, not an arbitrary object supplied by a
-  // connector. Keep only the six declared facts and only the values the page
+  // connector. Keep only the six declared facts plus the bounded plan-history
+  // object and only the values the page
   // can produce. This makes the storage boundary hold even if a future caller
   // accidentally passes the OAuth connection or a provider response through.
   function safeProfile(profile) {
@@ -50,6 +68,8 @@
         if (value) out[key] = value;
       }
     });
+    var history = safePlanHistory(profile.planHistory);
+    if (history) out.planHistory = history;
     return Object.keys(out).length ? out : null;
   }
 

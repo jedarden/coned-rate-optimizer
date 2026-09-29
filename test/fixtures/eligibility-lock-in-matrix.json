@@ -60,6 +60,46 @@
       "planNotesAbsent": {"smart": ["Lock-in"]}
     },
     {
+      "id": "tou-minimum-stay-blocks-switch",
+      "profile": {"currentPlan": "tou", "planHistory": {"currentPlanMonths": 6}},
+      "eligiblePlans": ["tou"],
+      "currentPlan": "tou",
+      "excludedPlans": {
+        "standard": "12-month minimum stay",
+        "steady": "12-month minimum stay",
+        "smart": "12-month minimum stay"
+      },
+      "planNotes": {"tou": ["6 months", "one-year minimum"]}
+    },
+    {
+      "id": "esco-exempts-tou-minimum-stay",
+      "profile": {"currentPlan": "tou", "esco": true, "planHistory": {"currentPlanMonths": 6}},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "tou",
+      "globalNotes": ["ESCO"],
+      "planNotes": {"tou": ["exempts", "one-year"]}
+    },
+    {
+      "id": "tou-reenrollment-block-after-exit",
+      "profile": {"planHistory": {"lastPlan": "tou", "monthsSinceExit": 6}},
+      "eligiblePlans": ["standard", "steady", "smart"],
+      "currentPlan": "standard",
+      "excludedPlans": {"tou": "can't re-enroll in Time-of-Use for 18 months"}
+    },
+    {
+      "id": "steady-reenrollment-block-after-exit",
+      "profile": {"planHistory": {"lastPlan": "steady", "monthsSinceExit": 6}},
+      "eligiblePlans": ["standard", "tou", "smart"],
+      "currentPlan": "standard",
+      "excludedPlans": {"steady": "can't re-enroll in Steady Use for 18 months"}
+    },
+    {
+      "id": "smart-reenrollment-boundary-is-eligible",
+      "profile": {"planHistory": {"smart": {"monthsSinceOptOut": 18}}},
+      "eligiblePlans": ["standard", "tou", "steady", "smart"],
+      "currentPlan": "standard"
+    },
+    {
       "id": "legacy-meter-excludes-demand",
       "profile": {"meter": "legacy"},
       "eligiblePlans": ["standard", "tou"],
