@@ -896,10 +896,10 @@
       var p = storedSeries.profile || {};
       var setSel = function (id, v) { var el = $(id); if (el && v !== undefined && v !== null) el.value = v; };
       setSel("pf-territory", p.territory); setSel("pf-plan", p.currentPlan); setSel("pf-meter", p.meter);
-      var history = p.planHistory || {};
-      setSel("pf-plan-months", history.currentPlanMonths);
-      setSel("pf-last-plan", history.lastPlan);
-      setSel("pf-months-since-exit", history.monthsSinceExit);
+      var planHistory = p.planHistory || {};
+      setSel("pf-plan-months", planHistory.currentPlanMonths);
+      setSel("pf-last-plan", planHistory.lastPlan);
+      setSel("pf-months-since-exit", planHistory.monthsSinceExit);
       ["solar", "esco", "heatpump"].forEach(function (k) {
         var el = $("pf-" + k); if (el && p[k] !== undefined && p[k] !== null) el.checked = !!p[k];
       });

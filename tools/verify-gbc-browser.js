@@ -88,6 +88,7 @@ function startStatic(box) {
   });
   async function handler(req, res) {
     const u = new URL(req.url, "http://x");
+    const siteOrigin = "http://" + req.headers.host;
     const chunks = [];
     if (req.method === "POST") for await (const c of req) chunks.push(c);
     const rec = {
@@ -109,7 +110,11 @@ function startStatic(box) {
           clientId: box.clientId,
           authorizeUrl: box.origin + "/authorize",
           apiBase: box.origin,
-          redirectUri: box.origin + "/",
+          // The provider is the sandbox, but OAuth must redirect back to the
+          // application origin that initiated the browser flow. Keeping this
+          // derived from the request also catches a production config that
+          // accidentally registers a provider or stale preview origin.
+          redirectUri: siteOrigin + "/",
           scopes: ["FB=4_5_6", "USAGE_READ"],
           tokenExchangePath: "/api/gbc/token"
         }));
@@ -373,15 +378,26 @@ const ok = (cond, msg) => {
     const bodyShape = (r) => {
       try {
         const j = JSON.parse(r.body);
-        return Object.keys(j).length === 2 && typeof j.code === "string" && typeof j.redirectUri === "string";
+        return JSON.stringify(Object.keys(j).sort()) === JSON.stringify(["code", "redirectUri"]) &&
+          typeof j.code === "string" && typeof j.redirectUri === "string";
       } catch (e) { return false; }
     };
     ok(sitePosts.length > 0 && sitePosts.every(bodyShape),
       "only the authorization code reached the token endpoint — every body was exactly {code, redirectUri}");
-    const usageMarkers = ["IntervalReading", "IntervalBlock", "UsageSummary", "powerOfTenMultiplier"];
-    const carried = (r, s) => (r.body + " " + r.path + " " + r.query + " " + (r.headers.authorization || "")).includes(s);
+    const usageMarkers = [
+      "IntervalReading", "IntervalBlock", "UsageSummary", "powerOfTenMultiplier",
+      "8e2f41c0-coned-sample-0000-000000000001", "1748750400", "<value>820</value>"
+    ];
+    const requestWire = (r) => JSON.stringify({
+      method: r.method,
+      path: r.path,
+      query: r.query,
+      headers: r.headers,
+      body: r.body
+    });
+    const carried = (r, s) => requestWire(r).includes(s);
     ok(siteReqs.length > 0 && siteReqs.every((r) => usageMarkers.every((m) => !carried(r, m))),
-      `no interval or billing byte ever reached the app server (${siteReqs.length} requests logged)`);
+      `no interval or billing payload byte ever reached the app server (${siteReqs.length} requests logged)`);
     ok(siteReqs.every((r) => !carried(r, box.accessToken)), "the access token never reached the app server");
     ok(siteReqs.every((r) => !r.path.startsWith("/espi/")),
       "the app server never saw a feed request — nothing to relay, nothing to retain");
