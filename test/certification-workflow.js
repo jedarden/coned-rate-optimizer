@@ -216,10 +216,18 @@ try {
   assert(/distinct approvers/.test(runbook), "the runbook requires controlled two-person enablement");
   const releaseGate = fs.readFileSync(path.join(__dirname, "../scripts/definition-of-done.sh"), "utf8");
   assert(/node test\/certification-workflow\.js/.test(releaseGate), "the repository definition of done runs the certification validator contract");
-  const ignored = spawnSync("git", ["check-ignore", "--no-index", "audit-corpus/acct-01/usage.csv", "audit-results/backtest-results.json", "certification-artifacts/certification.json"], { encoding: "utf8" });
-  assert.strictEqual(ignored.status, 0, "participant corpus, audit output, and certification artifacts are ignored by Git");
-  const tracked = spawnSync("git", ["ls-files", "audit-corpus", "audit-results", "certification-artifacts"], { encoding: "utf8" });
-  assert.strictEqual(tracked.stdout, "", "participant data and certification artifacts are not tracked");
+  const repoRoot = path.join(__dirname, "..");
+  const git = spawnSync("git", ["-C", repoRoot, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  if (git.status === 0) {
+    const ignored = spawnSync("git", ["-C", repoRoot, "check-ignore", "--no-index", "audit-corpus/acct-01/usage.csv", "audit-results/backtest-results.json", "certification-artifacts/certification.json"], { encoding: "utf8" });
+    assert.strictEqual(ignored.status, 0, "participant corpus, audit output, and certification artifacts are ignored by Git");
+    const tracked = spawnSync("git", ["-C", repoRoot, "ls-files", "audit-corpus", "audit-results", "certification-artifacts"], { encoding: "utf8" });
+    assert.strictEqual(tracked.stdout, "", "participant data and certification artifacts are not tracked");
+  } else {
+    const gitignore = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
+    assert(/\/audit-corpus\//.test(gitignore) && /\/audit-results\//.test(gitignore) && /\/certification-artifacts\//.test(gitignore), "the committed ignore policy protects participant and certification artifacts");
+    assert(!["audit-corpus", "audit-results", "certification-artifacts"].some((dir) => fs.existsSync(path.join(repoRoot, dir))), "a clean release archive contains no participant or certification artifacts");
+  }
 } finally {
   fs.rmSync(TMP, { recursive: true, force: true });
 }
