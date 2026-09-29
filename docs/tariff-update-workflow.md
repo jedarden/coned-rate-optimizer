@@ -53,12 +53,14 @@ is code.
 
 Every plan carries a `source` URL (required, `https://`, gate-enforced) naming
 the ConEd publication its numbers come from. These are the publications, and
-nothing else is a valid source for a number:
+nothing else is a valid source for a number. The exact 2026 SC1 Rate I and Rate
+III inputs, effective 2026-02-01, are transcribed in
+[`docs/2026-coned-rate-sources.md`](2026-coned-rate-sources.md):
 
 | Publication | Feeds | Cadence |
 |---|---|---|
 | [Historical Average Full Service Electric Rates PDF](https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf) (NYC Residential SC 1) | `standard.*` (latest year's average, grossed up for GRT + sales tax) and `bill.periods[]` (the per-year component history). **One publication, two sections — they move together** (gate-enforced: `bill.source` must name this same publication as `standard.source`, and the latest period ties to `standard.*`). | Annual (published on a lag; 2026 averages arrived mid-2026 for the 2025 year) |
-| [Time-of-Use page](https://www.coned.com/en/accounts-billing/your-bill/time-of-use) | `tou.offPeak` / `peakSummer` / `peakWinter` (residential TOU supply), `tou.gross`, `tou.customer`, the TOU lock-in terms | Checked at least quarterly |
+| [Time-of-Use page](https://www.coned.com/en/accounts-billing/your-bill/time-of-use) plus the [February 2026 PSC-10 tariff](https://www.coned.com/-/media/files/coned/documents/rates/electric/historical/psc-10/tariff/sc-202602.pdf), SC1 Rate III, Leaf 389.1 | `tou.offPeak` / `peakSummer` / `peakWinter` (the published residential TOU **delivery** schedule), `tou.customer`, and the TOU lock-in terms. Con Edison supply is a period/zone-specific MSC, not a fixed annual TOU supply value. | Checked at least quarterly |
 | [Steady Use Rate page](https://www.coned.com/en/accounts-billing/steady-use-rate) | `steadyUse.demand.*` ($/kW delivery), `customer`, lock-in terms, solar caution | Checked at least quarterly |
 | [Smart Energy Plan page](https://www.coned.com/en/accounts-billing/smart-energy-plan) | `smartEnergy.demand.*`, `customer`, lock-in terms, solar guidance | Checked at least quarterly |
 | [EV rewards page](https://www.coned.com/en/save-money/rebates-incentives-tax-credits/rebates-incentives-tax-credits-for-residential-customers/electric-vehicle-rewards) | `smartChargeNY.offPeakCredit`, `offPeakWindow`, eligibility wording | Checked at least quarterly |
@@ -134,7 +136,7 @@ Plan-specific rate fields:
 | Plan | Fields |
 |---|---|
 | `standard` (energy) | `allIn`, `commodity`, `delivery` ($/kWh) — `allIn` folds in the cents-scale MAC/RDM/surcharge adjustments on top of delivery + commodity, and is the value the bill-history tie check anchors to |
-| `tou` (energy) | `offPeak`, `peakSummer`, `peakWinter` ($/kWh supply), `gross` (gross-up multiplier, 1–1.5) — **no** `allIn`/`commodity`/`delivery`: the non-commodity side derives from `standard` (`nonCommodity = standard.allIn − standard.commodity`), so a standard override automatically re-prices TOU's delivery side |
+| `tou` (energy) | `offPeak`, `peakSummer`, `peakWinter` ($/kWh Rate III delivery schedule), `customer` ($/month). The tariff does not publish a fixed annual TOU supply value; full-service supply comes from the period/zone-specific MSC. Existing `gross`/non-commodity handling is model policy, not an additional 2026 tariff source. |
 | `steadyUse`, `smartEnergy` (demand) | `demand.peakSummer`, `demand.peakWinter`, `demand.off` ($/kW delivery), `peakWindow` |
 
 ### `smartChargeNY` (what-if incentive, not a priced plan)
