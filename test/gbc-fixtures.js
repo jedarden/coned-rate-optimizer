@@ -152,6 +152,9 @@ async function run() {
         `${testCase.name} has friendly provider copy`);
     }
   });
+  const stateA = gbc.randomState(), stateB = gbc.randomState();
+  check(/^[0-9a-f]{32}$/.test(stateA) && /^[0-9a-f]{32}$/.test(stateB) && stateA !== stateB,
+    "each authorization attempt gets a fresh 128-bit state");
   const originsForUrl = { appOrigin: "https://app.example", custodianOrigin: "https://custodian.example" };
   const authCfg = config(originsForUrl);
   const authUrl = new URL(gbc.authorizeUrl(authCfg, expectedState, originsForUrl.appOrigin + "/"));
@@ -169,6 +172,12 @@ async function run() {
   gbc.saveState(expectedState, store);
   gbc.saveConnection(storedConnection, store);
   check(gbc.loadState(store) === expectedState, "OAuth state round-trips through sessionStorage");
+  check(!gbc.consumeState("wrong-state", store) && gbc.loadState(store) === expectedState,
+    "a mismatched callback cannot consume the pending session state");
+  check(gbc.consumeState(expectedState, store) && gbc.loadState(store) === null &&
+    !gbc.consumeState(expectedState, store),
+  "an exact callback consumes its state once and rejects replay");
+  gbc.saveState(expectedState, store);
   check(gbc.loadConnection(store).accessToken === flow.connection.accessToken,
     "the access token round-trips through sessionStorage");
   check(gbc.connectionIsFresh(storedConnection, anchor), "a token outside the safety margin is fresh");

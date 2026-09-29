@@ -1012,6 +1012,13 @@
     var cb = G.parseCallback(qs, expected);
     try { history.replaceState(null, "", location.pathname); } catch (e) { /* keep the query */ }
     if (!cb.ok) { gbcStatus(G.friendlyError(cb), "bad"); return true; }
+    // Burn the exact state before any network request. A failed exchange must
+    // not make a valid callback replayable, while a rejected state remains
+    // available for the legitimate authorization response.
+    if (!G.consumeState(expected)) {
+      gbcStatus(G.friendlyError({ error: "state_mismatch" }), "bad");
+      return true;
+    }
     gbcBusy(true);
     gbcStatus("Exchanging your ConEd authorization for an access token…", "busy");
     G.connect(gbcCfg, cb.code, G.buildRedirectUri(location, gbcCfg.redirectUri)).then(function (conn) {

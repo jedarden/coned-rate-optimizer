@@ -181,7 +181,7 @@
     var s = storage || _storage();
     if (!s) return;
     try { s.removeItem(TOKEN_KEY); } catch (e) { /* ignore */ }
-    try { s.removeItem(STATE_KEY); } catch (e) { /* ignore */ }
+    clearState(s);
   }
   function saveState(state, storage) {
     var s = storage || _storage();
@@ -191,6 +191,27 @@
   function loadState(storage) {
     var s = storage || _storage();
     return s ? s.getItem(STATE_KEY) : null;
+  }
+  function clearState(storage) {
+    var s = storage || _storage();
+    if (!s) return;
+    try { s.removeItem(STATE_KEY); } catch (e) { /* ignore */ }
+  }
+  // Consume only the exact state that was validated for this callback. A
+  // mismatched callback must not be able to burn the legitimate pending state,
+  // while a matching callback must be one-time even if its token exchange
+  // fails or the provider redirects to this page again.
+  function consumeState(expectedState, storage) {
+    if (!expectedState) return false;
+    var s = storage || _storage();
+    if (!s) return false;
+    try {
+      if (s.getItem(STATE_KEY) !== expectedState) return false;
+      s.removeItem(STATE_KEY);
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   function connectionIsFresh(conn, nowMs) {
@@ -416,6 +437,8 @@
     clearConnection: clearConnection,
     saveState: saveState,
     loadState: loadState,
+    clearState: clearState,
+    consumeState: consumeState,
     connectionIsFresh: connectionIsFresh,
     apiGet: apiGet,
     apiGetPages: apiGetPages,

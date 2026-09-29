@@ -173,6 +173,11 @@ const ok = (cond, msg) => {
   const browser = await playwright.chromium.launch({ executablePath, args: ["--no-sandbox"] });
   const page = await browser.newPage();
   const pageErrors = [];
+  const authorizationStates = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/authorize") authorizationStates.push(url.searchParams.get("state"));
+  });
   page.on("pageerror", (e) => pageErrors.push(String(e)));
 
   try {
@@ -200,6 +205,10 @@ const ok = (cond, msg) => {
     await page.click("#gbc-connect");
     await page.waitForSelector("#results", { state: "visible", timeout: 15000 });
     ok(!/[?&]code=/.test(page.url()), "callback consumed — ?code= is gone from the address bar (" + page.url() + ")");
+    ok(authorizationStates.length === 1 && /^[0-9a-f]{32}$/.test(authorizationStates[0]),
+      "connect sends a fresh 128-bit OAuth state on the authorization request");
+    ok(await page.evaluate(() => sessionStorage.getItem("gbc-state")) === null,
+      "a successful callback consumes its state from sessionStorage");
 
     console.log("\n3. Feeds pulled and analyzed");
     const body = await page.textContent("body");
@@ -296,6 +305,11 @@ const ok = (cond, msg) => {
     ok(await storedConn() === null, "an unrequested reply stores no connection");
 
     await page.evaluate(() => sessionStorage.setItem("gbc-state", "expectedstate"));
+    await page.goto(site.origin + "/?code=auth_eavesdropped", { waitUntil: "load" });
+    await page.waitForFunction(() => /state mismatch/.test(document.getElementById("gbc-status").textContent));
+    ok(exchangePosts().length === postsBefore && await page.evaluate(() => sessionStorage.getItem("gbc-state")) === "expectedstate",
+      "a callback missing state is rejected without exchange and preserves the pending request");
+
     await page.goto(site.origin + "/?code=auth_eavesdropped&state=tampered", { waitUntil: "load" });
     await page.waitForFunction(() => /state mismatch/.test(document.getElementById("gbc-status").textContent));
     ok(await storedConn() === null, "a tampered state is refused the same way — still no connection");
@@ -314,9 +328,15 @@ const ok = (cond, msg) => {
     ok(await storedConn() === null && await page.isVisible("#gbc-connect"),
       "a refused exchange stores no connection and leaves the panel connectable");
 
-    await page.goto(site.origin + "/?error=access_denied&error_description=nope", { waitUntil: "load" });
+    await page.goto(site.origin + "/?code=auth_bogus&state=expectedstate", { waitUntil: "load" });
+    await page.waitForFunction(() => /state mismatch/.test(document.getElementById("gbc-status").textContent));
+    ok(exchangePosts().length === postsBefore + 1,
+      "the exact state is one-time: replaying a failed callback cannot retry the exchange");
+
+    await page.evaluate(() => sessionStorage.setItem("gbc-state", "error-state"));
+    await page.goto(site.origin + "/?error=access_denied&error_description=nope&code=must-not-exchange&state=error-state", { waitUntil: "load" });
     await page.waitForFunction(() => /declined the ConEd authorization/.test(document.getElementById("gbc-status").textContent));
-    ok(exchangePosts().length === postsBefore + 1, "an OAuth error callback never touches the token endpoint either");
+    ok(exchangePosts().length === postsBefore + 1, "an OAuth error callback is handled before any token exchange, even with a code present");
 
     console.log("\n8. sessionStorage token lifetime");
     await page.click("#gbc-connect");
@@ -324,6 +344,8 @@ const ok = (cond, msg) => {
       () => /Connected · subscription 77/.test(document.getElementById("gbc-status").textContent),
       null, { timeout: 15000 }
     );
+    ok(authorizationStates.length === 2 && authorizationStates[1] !== authorizationStates[0],
+      "a second authorization attempt receives a different per-request state");
     ok(/authorization expires in ~60 min · it lives only in this tab/.test(await page.textContent("#gbc-status")),
       "the panel names the token's lifetime and where it lives");
     const conn8 = await page.evaluate(() => JSON.parse(sessionStorage.getItem("gbc-connection")));

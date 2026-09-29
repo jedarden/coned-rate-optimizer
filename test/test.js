@@ -981,7 +981,7 @@ try {
   };
   for (const fn of ["validateConfig", "loadConfig", "isConfigured", "randomState", "buildRedirectUri",
     "authorizeUrl", "parseCallback", "friendlyError", "exchangeToken", "saveConnection", "loadConnection",
-    "clearConnection", "connectionIsFresh", "apiGet", "apiGetPages", "extractEntryIds", "extractNextLink", "mergeAtomPages", "connect", "refreshFeeds"]) {
+    "clearConnection", "saveState", "loadState", "clearState", "consumeState", "connectionIsFresh", "apiGet", "apiGetPages", "extractEntryIds", "extractNextLink", "mergeAtomPages", "connect", "refreshFeeds"]) {
     assert(typeof gbc[fn] === "function", `exports ${fn}()`);
   }
 
@@ -1001,7 +1001,9 @@ try {
     "ESPI path templates default when the config omits them");
 
   // authorization request
-  assert(/^[0-9a-f]{32}$/.test(gbc.randomState()), "randomState is 128-bit hex");
+  const state1 = gbc.randomState(), state2 = gbc.randomState();
+  assert(/^[0-9a-f]{32}$/.test(state1) && /^[0-9a-f]{32}$/.test(state2), "randomState is 128-bit hex");
+  assert(state1 !== state2, "each authorization request gets a fresh random state");
   throws(() => gbc.authorizeUrl(gbc.validateConfig({}), "s", "r/"),
     "authorizeUrl refuses an unconfigured deployment");
   const aUrl = new URL(gbc.authorizeUrl(cfg, "st4te", "https://site.example/"));
@@ -1023,6 +1025,8 @@ try {
   assert(cb.ok === true && cb.code === "c1", "valid callback accepted");
   assert(gbc.parseCallback("?code=c1&state=zzz", "st4te").error === "state_mismatch",
     "mismatched state rejected (CSRF guard)");
+  assert(gbc.parseCallback("?code=c1&state=ST4TE", "st4te").error === "state_mismatch",
+    "state matching is exact and case-sensitive");
   assert(gbc.parseCallback("?state=st4te", "st4te").error === "missing_code", "codeless callback rejected");
   const denied = gbc.parseCallback("?error=access_denied", "st4te");
   assert(denied.ok === false && denied.error === "access_denied", "OAuth error callback surfaced");
@@ -1031,6 +1035,13 @@ try {
   // connection store (sessionStorage shim) + freshness
   const conn = { accessToken: "tok", tokenType: "Bearer", expiresAt: Date.now() + 3600e3 };
   const s1 = shim();
+  gbc.saveState("pending-state", s1);
+  assert(gbc.loadState(s1) === "pending-state", "OAuth state is kept in sessionStorage");
+  assert(!gbc.consumeState("wrong-state", s1) && gbc.loadState(s1) === "pending-state",
+    "a mismatched callback cannot consume the pending state");
+  assert(gbc.consumeState("pending-state", s1) && gbc.loadState(s1) === null,
+    "the exact callback state is consumed before exchange");
+  assert(!gbc.consumeState("pending-state", s1), "a consumed state cannot be reused");
   gbc.saveConnection(conn, s1);
   assert(gbc.loadConnection(s1).accessToken === "tok", "connection round-trips through the store");
   assert(gbc.connectionIsFresh(conn, Date.now()), "fresh connection detected");

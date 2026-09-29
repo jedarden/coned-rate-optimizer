@@ -191,8 +191,10 @@ On return, the page consumes `code`, `state`, or OAuth `error` query values.
 `parseCallback()` accepts a code only when the returned state equals the saved
 state. A missing code or mismatched state is rejected locally and never reaches
 the token endpoint. `error` and `error_description` are surfaced as an OAuth
-failure and also never reach the token endpoint. A matching code is one-time
-and is exchanged once with the exact same redirect URI.
+failure and also never reach the token endpoint. A matching state is consumed
+from `sessionStorage` before the exchange, so even a failed exchange cannot
+make that callback replayable. A matching code is one-time and is exchanged
+once with the exact same redirect URI.
 
 Acceptance: `GBC-AC-AUTHORIZATION-URL`, `GBC-AC-SCOPES`, and
 `GBC-AC-REDIRECT-HANDLING`.
