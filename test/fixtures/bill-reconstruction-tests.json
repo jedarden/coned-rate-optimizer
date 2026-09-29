@@ -4,7 +4,7 @@
   "generatedBy": "scripts/regenerate-reconstruction-tests.js",
   "release": {
     "version": "1.10.0",
-    "fingerprint": "fd5d35e4e2d817dbc098cb546e380c23a0f30e9b6d4ab859d52ed08aee73715a"
+    "fingerprint": "e27536ceca161281672a285157879a8b1afaeb3f9745e69f575ca0b6f7ca70a1"
   },
   "source": {
     "path": "test/fixtures/bill-history-sc1-nyc.json",

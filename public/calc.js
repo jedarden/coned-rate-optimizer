@@ -7,16 +7,16 @@
   var RATES = {
     meta: {
       version: "1.10.0",
-      asOf: "Standard/TOU: 2025 published SC1 NYC averages. TOU & demand rates: current as of 2026-07.",
+      asOf: "Standard: 2025 published SC1 NYC averages plus the 2026-02-01 SC1 Rate I schedule. TOU & demand rates: current as of 2026-07.",
       reviewedThrough: "2026-07-01",
       utility: "Con Edison",
       serviceClass: "SC1 (Rate I) — NYC Residential",
-      basis: "Standard/TOU = ConEd 2025 published SC1 NYC average (grossed up for GRT + sales tax). Demand plans use ConEd's published $/kW delivery rates. Bill reconstruction itemizes ConEd's 3-year published component history (2023–2025) — see RATES.bill.",
+      basis: "Standard uses the 2025 published SC1 NYC average until the 2026-02-01 SC1 Rate I schedule takes effect; TOU uses its effective-period seasonal schedule. Historical bill reconstruction itemizes ConEd's 3-year published component history (2023–2025) — see RATES.bill.",
       updated: "2026-09",
       peakWindow: "Energy plans: peak 8am–midnight, off-peak midnight–8am. Demand plans (Steady Use / Smart Energy): peak weekdays noon–8pm.",
       switchTiming: "A rate switch takes effect with a future meter read — typically your next bill or the one after (1–2 billing cycles).",
       caveats: [
-        "Absolute totals are ±~5%: the monthly Market Supply Charge varies, and 2026 months are priced at 2025 rates.",
+        "Absolute totals are ±~5%: the monthly Market Supply Charge varies, and unlisted supply adjustments continue on the historical basis while effective-period 2026 delivery and TOU schedule rates are applied.",
         "Standard & Time-of-Use assume delivery/MAC/RDM/surcharges are identical; only supply is time-differentiated.",
         "Steady Use & Smart Energy are DEMAND-based (billed on your peak kW, not total kWh). Delivery uses ConEd's published $/kW rates applied to the peak demand derived from your interval data (avg of the 3 highest hourly demands per period); supply + other charges are held at the standard flat rate because ConEd doesn't publish the exact time-of-use supply rates for these plans. Estimates, best for heat-pump / flat-demand homes.",
         "SmartCharge NY is an opt-in what-if scenario: it applies the published $0.10/kWh off-peak EV charging incentive to the Time-of-Use estimate. Con Edison currently says Residential Time-of-Use customers are not eligible, so verify program eligibility before relying on the combined estimate.",
@@ -38,16 +38,38 @@
     standard: {
       name: "Standard Residential", short: "Standard", basis: "energy",
       eligibility: "every SC1 residential customer (the default rate)",
-      ratesAsOf: "2025 published SC1 NYC averages (2026 usage priced at 2025 rates); PDF verified 2026-07",
+      ratesAsOf: "2025 published SC1 NYC averages; PSC-10 SC1 Rate I effective 2026-02-01; PDF verified 2026-07",
       source: "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
       requires: { serviceClass: "SC1" },
       lockIn: null,   // the default rate — no commitment, and every other plan can switch back to it
-      allIn: 0.338267, commodity: 0.137533, delivery: 0.183233, customer: 16.33
+      allIn: 0.338267, commodity: 0.137533, delivery: 0.183233, customer: 16.33,
+      // Calendar-month pricing uses the effective schedule below. The 2025 entry
+      // preserves the historical average; the 2026 entry carries the February
+      // PSC-10 Rate I delivery schedule without rewriting 2025 months.
+      rateSchedule: [
+        {
+          effectiveFrom: "2025-01-01",
+          source: "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
+          allIn: 0.338267, commodity: 0.137533, delivery: 0.183233,
+          nonDelivery: 0.017501, customer: 16.33
+        },
+        {
+          effectiveFrom: "2026-02-01",
+          source: "https://www.coned.com/-/media/files/coned/documents/rates/electric/historical/psc-10/tariff/sc-202602.pdf",
+          commodity: 0.137533, nonDelivery: 0.017501, customer: 21.00,
+          delivery: {
+            summerFirst250: 0.16402,
+            summerOver250: 0.18858,
+            otherMonths: 0.16402,
+            summerThresholdKwh: 250
+          }
+        }
+      ]
     },
     tou: {
       name: "Time-of-Use", short: "TOU", basis: "energy",
       eligibility: "SC1 residential customers who opt in",
-      ratesAsOf: "residential TOU supply rates current as of 2026-07",
+      ratesAsOf: "residential TOU schedule; PSC-10 Rate III effective 2026-02-01; verified 2026-07",
       source: "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
       requires: { serviceClass: "SC1" },
       // ConEd's published enrollment terms: "After you switch to the Time-of-Use Rate, you must
@@ -58,7 +80,23 @@
         minStayMonths: 12, reenrollBlockMonths: 18, escoExempt: true,
         note: "one-year minimum on TOU (ESCO-supplied homes exempt); leave and you can't rejoin TOU for 18 months"
       },
-      nonCommodity: 0.338267 - 0.137533, offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711, gross: 1.10, customer: 21.00
+      nonCommodity: 0.338267 - 0.137533, offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711, gross: 1.10, customer: 21.00,
+      // The 2025 entry is the historical TOU basis already used by the model.
+      // Rate III's published 2026 seasonal values take effect 2026-02-01.
+      rateSchedule: [
+        {
+          effectiveFrom: "2025-01-01",
+          source: "https://www.coned.com/en/accounts-billing/your-bill/time-of-use",
+          offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711,
+          gross: 1.10, customer: 21.00
+        },
+        {
+          effectiveFrom: "2026-02-01",
+          source: "https://www.coned.com/-/media/files/coned/documents/rates/electric/historical/psc-10/tariff/sc-202602.pdf",
+          offPeak: 0.0522, peakSummer: 0.2786, peakWinter: 0.1711,
+          gross: 1.10, customer: 21.00
+        }
+      ]
     },
     smartChargeNY: {
       name: "SmartCharge NY", offPeakCredit: 0.10, offPeakWindow: "midnight–8am",
@@ -107,7 +145,8 @@
     // sales tax; EXCLUDES the customer charge and BPP, exactly as ConEd publishes them (a
     // real bill adds the customer charge on top). RDM can be a credit (2023: −0.6533¢/kWh).
     // A billing year with no period here prices at the latest prior year and reconstructBill
-    // flags it `projected` — 2026 usage is priced at 2025 averages (the first meta caveat).
+    // flags it `projected`. This historical bill-replay table is separate from the
+    // effective-period monthly plan schedules above.
     bill: {
       basis: "ConEd 3-Year Historical Average Full Service Electric Rates — NYC Residential SC 1, grossed up for GRT + sales tax, excluding customer charge & BPP",
       source: "https://www.coned.com/-/media/files/coned/documents/save-energy-money/using-private-generation/historical-average-full-service-electric-rates.pdf",
@@ -148,6 +187,10 @@
     }
   };
   RATES._nonDelivery = RATES.standard.allIn - RATES.standard.delivery;
+  var RATE_SCALAR_BASELINE = {
+    standard: { allIn: RATES.standard.allIn, commodity: RATES.standard.commodity, delivery: RATES.standard.delivery, customer: RATES.standard.customer },
+    tou: { offPeak: RATES.tou.offPeak, peakSummer: RATES.tou.peakSummer, peakWinter: RATES.tou.peakWinter, gross: RATES.tou.gross, customer: RATES.tou.customer }
+  };
 
   function isSummer(m) { return RATES.summerMonths.indexOf(m) !== -1; }
   function cph(x) { return (x * 100).toFixed(2) + "¢/kWh"; }
@@ -165,9 +208,125 @@
   }
   function applyRates(obj) {
     if (!obj) return;
+    var hasStandardSchedule = !!(obj.standard && Array.isArray(obj.standard.rateSchedule));
+    var hasTouSchedule = !!(obj.tou && Array.isArray(obj.tou.rateSchedule));
     deepMerge(RATES, obj);
     RATES._nonDelivery = RATES.standard.allIn - RATES.standard.delivery;   // keep derived fields fresh
     RATES.tou.nonCommodity = RATES.standard.allIn - RATES.standard.commodity;
+    // A complete release carries its schedule and establishes the scalar
+    // values as the baseline. A caller that changes one of the old scalar
+    // fields directly still gets the legacy runtime-override behavior.
+    if (hasStandardSchedule) {
+      ["allIn", "commodity", "delivery", "customer"].forEach(function (k) { RATE_SCALAR_BASELINE.standard[k] = RATES.standard[k]; });
+    }
+    if (hasTouSchedule) {
+      ["offPeak", "peakSummer", "peakWinter", "gross", "customer"].forEach(function (k) { RATE_SCALAR_BASELINE.tou[k] = RATES.tou[k]; });
+    }
+  }
+
+  // Resolve a calendar-month bucket against a plan's effective-period schedule.
+  // The public API has always accepted month objects, so missing date metadata
+  // deliberately falls back to the plan's scalar defaults.
+  function serviceMonthKey(month) {
+    if (typeof month === "string") {
+      var sm = /^(\d{4})[-\/](\d{1,2})/.exec(month);
+      return sm ? (+sm[1] * 10000 + +sm[2] * 100 + 1) : null;
+    }
+    month = month || {};
+    var label = month.ym || month.serviceMonth;
+    if (label !== undefined) return serviceMonthKey(String(label));
+    var y = month.year !== undefined ? +month.year : +month.y;
+    var mo = month.month !== undefined ? +month.month : +month.mo;
+    return isFinite(y) && isFinite(mo) && y > 0 && mo >= 1 && mo <= 12
+      ? y * 10000 + mo * 100 + 1 : null;
+  }
+
+  function effectiveDateKey(value) {
+    var m = /^(\d{4})[-\/](\d{1,2})(?:[-\/](\d{1,2}))?/.exec(String(value || ""));
+    return m ? (+m[1] * 10000 + +m[2] * 100 + (m[3] ? +m[3] : 1)) : null;
+  }
+
+  function effectiveSchedule(plan, month) {
+    var schedule = plan && plan.rateSchedule;
+    var key = serviceMonthKey(month), selected = null, selectedKey = -Infinity;
+    if (!Array.isArray(schedule) || key === null) return plan;
+    schedule.forEach(function (period) {
+      if (!period || typeof period !== "object") return;
+      var from = effectiveDateKey(period.effectiveFrom);
+      var to = period.effectiveTo === undefined ? null : effectiveDateKey(period.effectiveTo);
+      if (from === null || from > key || (to !== null && key > to)) return;
+      if (from >= selectedKey) { selected = period; selectedKey = from; }
+    });
+    return selected || plan;
+  }
+
+  function serviceMonthNumber(month) {
+    var key = serviceMonthKey(month);
+    return key === null ? null : Math.floor(key / 100) % 100;
+  }
+
+  function serviceMonthIsSummer(month) {
+    if (month && month.summer !== undefined) return !!month.summer;
+    var mo = serviceMonthNumber(month);
+    return mo === null ? false : isSummer(mo);
+  }
+
+  function standardRateForMonth(month) {
+    var plan = RATES.standard, period = effectiveSchedule(plan, month);
+    var scalarOverride = function (field) {
+      return typeof plan[field] === "number" && plan[field] !== RATE_SCALAR_BASELINE.standard[field];
+    };
+    var baseDelivery = typeof plan.delivery === "number" ? plan.delivery : 0;
+    var commodity = scalarOverride("commodity") ? plan.commodity
+      : (typeof period.commodity === "number" ? period.commodity : plan.commodity);
+    var allIn = scalarOverride("allIn") ? plan.allIn
+      : (typeof period.allIn === "number" ? period.allIn : plan.allIn);
+    return {
+      period: period,
+      delivery: scalarOverride("delivery") ? plan.delivery
+        : (period.delivery !== undefined ? period.delivery : baseDelivery),
+      commodity: commodity,
+      nonDelivery: typeof period.nonDelivery === "number"
+        ? (scalarOverride("allIn") || scalarOverride("delivery") || scalarOverride("commodity")
+          ? allIn - baseDelivery - commodity : period.nonDelivery)
+        : allIn - baseDelivery - commodity,
+      customer: scalarOverride("customer") ? plan.customer
+        : (typeof period.customer === "number" ? period.customer : plan.customer)
+    };
+  }
+
+  // Rate I's summer threshold is per billing period. Calendar-month buckets are
+  // the finest service period available to this calculator, so the threshold is
+  // applied within each month's kWh bucket.
+  function standardDeliveryAmount(month, rate) {
+    var kwh = +month.total || 0, delivery = rate.delivery;
+    if (kwh <= 0) return 0;
+    if (typeof delivery === "number") return kwh * delivery;
+    if (!delivery || typeof delivery !== "object") return kwh * RATES.standard.delivery;
+    var threshold = typeof delivery.summerThresholdKwh === "number" ? delivery.summerThresholdKwh : 250;
+    if (!serviceMonthIsSummer(month)) {
+      var other = typeof delivery.otherMonths === "number" ? delivery.otherMonths : delivery.flat;
+      return kwh * (typeof other === "number" ? other : RATES.standard.delivery);
+    }
+    var firstRate = typeof delivery.summerFirst250 === "number" ? delivery.summerFirst250 : delivery.otherMonths;
+    var overRate = typeof delivery.summerOver250 === "number" ? delivery.summerOver250 : firstRate;
+    var firstKwh = Math.min(kwh, threshold);
+    return firstKwh * firstRate + Math.max(0, kwh - threshold) * overRate;
+  }
+
+  function touRateForMonth(month) {
+    var plan = RATES.tou, period = effectiveSchedule(plan, month);
+    var scalarOverride = function (field) {
+      return typeof plan[field] === "number" && plan[field] !== RATE_SCALAR_BASELINE.tou[field];
+    };
+    return {
+      period: period,
+      offPeak: scalarOverride("offPeak") ? plan.offPeak : (typeof period.offPeak === "number" ? period.offPeak : plan.offPeak),
+      peakSummer: scalarOverride("peakSummer") ? plan.peakSummer : (typeof period.peakSummer === "number" ? period.peakSummer : plan.peakSummer),
+      peakWinter: scalarOverride("peakWinter") ? plan.peakWinter : (typeof period.peakWinter === "number" ? period.peakWinter : plan.peakWinter),
+      gross: scalarOverride("gross") ? plan.gross : (typeof period.gross === "number" ? period.gross : plan.gross),
+      customer: scalarOverride("customer") ? plan.customer : (typeof period.customer === "number" ? period.customer : plan.customer)
+    };
   }
 
   // ---- CSV helpers ----
@@ -285,27 +444,53 @@
 
   // ---- cost models (return {total, lines} for "show the math") ----
   function costStandard(months) {
-    var kwh = 0, cust = 0; months.forEach(function (m) { kwh += m.total; cust += RATES.standard.customer; });
-    var delivery = kwh * RATES.standard.delivery, supply = kwh * RATES.standard.commodity, other = kwh * (RATES.standard.allIn - RATES.standard.delivery - RATES.standard.commodity);
+    var kwh = 0, cust = 0, delivery = 0, supply = 0, other = 0;
+    months.forEach(function (m) {
+      var rate = standardRateForMonth(m), usage = +m.total || 0;
+      kwh += usage;
+      delivery += standardDeliveryAmount(m, rate);
+      supply += usage * rate.commodity;
+      other += usage * rate.nonDelivery;
+      cust += rate.customer;
+    });
     return { total: delivery + supply + other + cust, lines: [
-      { label: "Delivery", detail: fmtKwh(kwh) + " × " + cph(RATES.standard.delivery), amount: delivery },
-      { label: "Supply", detail: fmtKwh(kwh) + " × " + cph(RATES.standard.commodity), amount: supply },
-      { label: "MAC / RDM / surcharges", detail: fmtKwh(kwh) + " × " + cph(RATES.standard.allIn - RATES.standard.delivery - RATES.standard.commodity), amount: other },
-      { label: "Basic service charge", detail: "$" + RATES.standard.customer.toFixed(2) + "/mo", amount: cust }
+      { label: "Delivery", detail: fmtKwh(kwh) + " × effective SC1 delivery schedule (" + cph(kwh ? delivery / kwh : 0) + " average)", amount: delivery },
+      { label: "Supply", detail: fmtKwh(kwh) + " × " + cph(kwh ? supply / kwh : 0), amount: supply },
+      { label: "MAC / RDM / surcharges", detail: fmtKwh(kwh) + " × " + cph(kwh ? other / kwh : 0), amount: other },
+      { label: "Basic service charge", detail: "effective schedule average", amount: cust }
     ] };
   }
   function costTOU(months, options) {
-    var kwh = 0, offPeakKwh = 0, noncomm = 0, supplyRaw = 0, cust = 0, smartCharge = smartChargeEnabled(options);
-    months.forEach(function (m) { kwh += m.total; offPeakKwh += m.off; noncomm += m.total * RATES.tou.nonCommodity; supplyRaw += m.peak * (m.summer ? RATES.tou.peakSummer : RATES.tou.peakWinter) + m.off * RATES.tou.offPeak; cust += RATES.tou.customer; });
-    var supply = supplyRaw * RATES.tou.gross;
+    var kwh = 0, offPeakKwh = 0, noncomm = 0, supply = 0, cust = 0;
+    var summerPeakKwh = 0, winterPeakKwh = 0, summerPeakSupply = 0, winterPeakSupply = 0, offPeakSupply = 0;
+    var smartCharge = smartChargeEnabled(options);
+    months.forEach(function (m) {
+      var touRate = touRateForMonth(m), standardRate = standardRateForMonth(m), usage = +m.total || 0;
+      var off = +m.off || 0, peak = +m.peak || 0;
+      kwh += usage;
+      offPeakKwh += off;
+      // Standard and TOU share the delivery-side basis; TOU's time-varying
+      // fields below are the residential TOU supply schedule.
+      noncomm += standardDeliveryAmount(m, standardRate) + usage * standardRate.nonDelivery;
+      if (serviceMonthIsSummer(m)) {
+        summerPeakKwh += peak;
+        summerPeakSupply += peak * touRate.peakSummer;
+      } else {
+        winterPeakKwh += peak;
+        winterPeakSupply += peak * touRate.peakWinter;
+      }
+      offPeakSupply += off * touRate.offPeak;
+      supply += (peak * (serviceMonthIsSummer(m) ? touRate.peakSummer : touRate.peakWinter) + off * touRate.offPeak) * touRate.gross;
+      cust += touRate.customer;
+    });
     var credit = smartCharge ? offPeakKwh * RATES.smartChargeNY.offPeakCredit : 0;
     var lines = [
-      { label: "Delivery + surcharges", detail: fmtKwh(kwh) + " × " + cph(RATES.tou.nonCommodity), amount: noncomm },
-      { label: "Supply (time-of-use)", detail: "peak " + cph(RATES.tou.peakSummer) + " summer / " + cph(RATES.tou.peakWinter) + " winter · off-peak " + cph(RATES.tou.offPeak), amount: supply }
+      { label: "Delivery + surcharges", detail: fmtKwh(kwh) + " × effective SC1 delivery schedule (" + cph(kwh ? noncomm / kwh : 0) + " average)", amount: noncomm },
+      { label: "Supply (time-of-use)", detail: "peak " + cph(summerPeakKwh ? summerPeakSupply / summerPeakKwh : RATES.tou.peakSummer) + " summer / " + cph(winterPeakKwh ? winterPeakSupply / winterPeakKwh : RATES.tou.peakWinter) + " winter · off-peak " + cph(kwh ? offPeakSupply / (offPeakKwh || 1) : RATES.tou.offPeak), amount: supply }
     ];
     if (smartCharge) lines.push({ label: "SmartCharge NY off-peak credit", detail: fmtKwh(offPeakKwh) + " × −" + cph(RATES.smartChargeNY.offPeakCredit), amount: -credit });
     lines.push(
-      { label: "Basic service charge", detail: "$" + RATES.tou.customer.toFixed(2) + "/mo", amount: cust }
+      { label: "Basic service charge", detail: "effective schedule average", amount: cust }
     );
     return { total: noncomm + supply + cust - credit, lines: lines,
       smartChargeNY: { enabled: smartCharge, offPeakKwh: offPeakKwh, credit: credit } };
