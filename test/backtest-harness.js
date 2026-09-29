@@ -52,6 +52,55 @@ function hourLabel(h) {
   return `${h - 12}:00 PM`;
 }
 
+// A tiny stored ZIP writer keeps the test independent of the host `zip`
+// command while exercising the same archive path as a ConEd download.
+function crc32(data) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function storedZip(name, text) {
+  const nameBytes = Buffer.from(name);
+  const data = Buffer.from(text);
+  const crc = crc32(data);
+  const local = Buffer.alloc(30 + nameBytes.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0, 6);
+  local.writeUInt16LE(0, 8);
+  local.writeUInt16LE(0, 10);
+  local.writeUInt16LE(0, 12);
+  local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(nameBytes.length, 26);
+  nameBytes.copy(local, 30);
+  const central = Buffer.alloc(46 + nameBytes.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0, 8);
+  central.writeUInt16LE(0, 10);
+  central.writeUInt16LE(0, 12);
+  central.writeUInt16LE(0, 14);
+  central.writeUInt32LE(crc, 16);
+  central.writeUInt32LE(data.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(nameBytes.length, 28);
+  central.writeUInt32LE(0, 42);
+  nameBytes.copy(central, 46);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(local.length + data.length, 16);
+  return Buffer.concat([local, data, central, end]);
+}
+
 // Two interval rows per day (coverage counts days, pricing counts kWh) with a
 // mild deterministic seasonal shape and a per-account offset for diversity.
 function usageCsv(acctIdx) {
@@ -68,7 +117,7 @@ function usageCsv(acctIdx) {
   return rows.join("\n") + "\n";
 }
 
-function writeAccount(root, id, acctIdx, breakBillIdx = -1) {
+function writeAccount(root, id, acctIdx, breakBillIdx = -1, archiveUsage = false) {
   const dir = path.join(root, id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "consent.json"),
@@ -84,7 +133,7 @@ function writeAccount(root, id, acctIdx, breakBillIdx = -1) {
     territory: cohort[0], currentPlan: cohort[1], loadShape: cohort[2], meter: cohort[3]
   }, null, 2));
   const csv = usageCsv(acctIdx);
-  fs.writeFileSync(path.join(dir, "usage.csv"), csv);
+  fs.writeFileSync(path.join(dir, archiveUsage ? "usage.zip" : "usage.csv"), archiveUsage ? storedZip("usage.csv", csv) : csv);
 
   // kWh per bill window from the same rows the parser will read, then the bill
   // total from the reconstruction itself — so an honest corpus lands at the
@@ -113,11 +162,11 @@ function writeAccount(root, id, acctIdx, breakBillIdx = -1) {
   return dir;
 }
 
-function writeCorpus(root, n, breakBillIn = () => -1) {
+function writeCorpus(root, n, breakBillIn = () => -1, archiveUsageFor = () => false) {
   fs.mkdirSync(root, { recursive: true });
   for (let i = 0; i < n; i++) {
     const id = `acct-${String(i + 1).padStart(2, "0")}`;
-    writeAccount(root, id, i, breakBillIn(i));
+    writeAccount(root, id, i, breakBillIn(i), archiveUsageFor(i));
   }
   return root;
 }
@@ -138,7 +187,7 @@ try {
   // Test 1: a full 20-account corpus of honest bills passes the gate.
   console.log("Test 1: 20 honest accounts → gate PASSES (exit 0)");
   {
-    const corpus = writeCorpus(path.join(tmp, "pass"), 20);
+    const corpus = writeCorpus(path.join(tmp, "pass"), 20, () => -1, (i) => i === 0);
     const r = runHarness(corpus, path.join(tmp, "out-pass"));
     assert(r.status === 0, `exit 0 (got ${r.status})`);
     assert(r.results && r.results.verdict === "pass", `verdict "pass" (got ${r.results && r.results.verdict})`);
@@ -186,9 +235,19 @@ try {
     assert(/INCOMPLETE/.test(r.stdout) && /cannot certify/.test(r.stdout), "stdout says the audit cannot certify below the bar");
   }
 
-  // Test 4: an unconsented bundle refuses the whole run — the audit never
+  // The option may make the bar stricter but must never weaken the strategy's
+  // mandatory minimum. A smaller requested value still requires 20 accounts.
+  console.log("Test 4: --min-accounts 1 cannot lower the 20-account certification floor");
+  {
+    const corpus = writeCorpus(path.join(tmp, "floor"), 19);
+    const r = runHarness(corpus, path.join(tmp, "out-floor"), ["--min-accounts", "1"]);
+    assert(r.status === 2 && r.results.verdict === "incomplete", `19 accounts remain incomplete (exit ${r.status}, verdict ${r.results && r.results.verdict})`);
+    assert(r.results.minAccounts === 20 && r.results.strategyMinimumAccounts === 20, "report preserves the mandatory 20-account floor");
+  }
+
+  // Test 5: an unconsented bundle refuses the whole run — the audit never
   // proceeds past missing consent.
-  console.log("Test 4: missing consent.json → REFUSED (exit 1)");
+  console.log("Test 5: missing consent.json → REFUSED (exit 1)");
   {
     const corpus = writeCorpus(path.join(tmp, "consent"), 20);
     fs.rmSync(path.join(corpus, "acct-07", "consent.json"));
@@ -199,9 +258,9 @@ try {
     assert(!fs.existsSync(path.join(tmp, "out-consent", "backtest-summary.md")), "no summary is written after the refusal");
   }
 
-  // Test 5: the anonymization contract is enforced on the corpus itself — a
+  // Test 6: the anonymization contract is enforced on the corpus itself — a
   // bills.json entry carrying a field outside the schema refuses the run.
-  console.log("Test 5: a bill record with an out-of-contract field → REFUSED (exit 1)");
+  console.log("Test 6: a bill record with an out-of-contract field → REFUSED (exit 1)");
   {
     const corpus = writeCorpus(path.join(tmp, "schema"), 20);
     const bills = JSON.parse(fs.readFileSync(path.join(corpus, "acct-03", "bills.json"), "utf8"));
@@ -212,15 +271,15 @@ try {
     assert(/outside the audit schema/.test(r.stdout), `refusal names the schema violation: ${r.stdout.trim()}`);
   }
 
-  // Test 6: a missing corpus directory is a usage error, not a silent pass.
-  console.log("Test 6: nonexistent corpus → usage error (exit 1)");
+  // Test 7: a missing corpus directory is a usage error, not a silent pass.
+  console.log("Test 7: nonexistent corpus → usage error (exit 1)");
   {
     const r = runHarness(path.join(tmp, "does-not-exist"), path.join(tmp, "out-none"));
     assert(r.status === 1 && /not found/.test(r.stderr), `exit 1 with a clear error (got ${r.status}: ${r.stderr.trim()})`);
   }
 
-  // Test 7: cohort buckets are categorical and cannot carry participant text.
-  console.log("Test 7: free-form cohort data → REFUSED (exit 1)");
+  // Test 8: cohort buckets are categorical and cannot carry participant text.
+  console.log("Test 8: free-form cohort data → REFUSED (exit 1)");
   {
     const corpus = writeCorpus(path.join(tmp, "cohort"), 20);
     const cohort = JSON.parse(fs.readFileSync(path.join(corpus, "acct-04", "cohort.json"), "utf8"));
@@ -229,6 +288,17 @@ try {
     const r = runHarness(corpus, path.join(tmp, "out-cohort"));
     assert(r.status === 1 && !r.results, "exit 1, no results artifact after cohort refusal");
     assert(/lowercase categorical bucket/.test(r.stdout), "refusal prevents free-form participant data");
+  }
+
+  // A root-level stray file is refused instead of being silently ignored; this
+  // keeps a copied bill scan or participant note out of the audit boundary.
+  console.log("Test 9: stray corpus-root file → REFUSED (exit 1)");
+  {
+    const corpus = writeCorpus(path.join(tmp, "root-entry"), 20);
+    fs.writeFileSync(path.join(corpus, "participant-note.txt"), "not part of the anonymized corpus");
+    const r = runHarness(corpus, path.join(tmp, "out-root-entry"));
+    assert(r.status === 1 && !r.results, "exit 1, no results artifact after root-entry refusal");
+    assert(/corpus root contains a non-account entry/.test(r.stdout), "refusal names the unexpected root entry");
   }
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

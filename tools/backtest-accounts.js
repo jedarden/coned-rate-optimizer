@@ -8,8 +8,9 @@
    writes the reproducible anonymized results summary.
 
    THE AUDIT RUNS ON REAL DATA ONLY. This tool has no fixture mode and cannot
-   manufacture a passing verdict: a corpus below --min-accounts (default 20,
-   the strategy's bar) exits 2 "incomplete" — reported, never certified.
+   manufacture a passing verdict: a corpus below the strategy's mandatory
+   20-account floor exits 2 "incomplete" — reported, never certified.
+   --min-accounts may raise that floor for a stricter run, but cannot lower it.
 
    Corpus layout (--corpus DIR; one directory per account; the directory name
    is the account's opaque anonymized id, e.g. acct-01 — never a name):
@@ -44,6 +45,10 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const calc = require("../public/calc.js");
 
+const STRATEGY_MIN_ACCOUNTS = 20;
+const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+const FIXED_ACCOUNT_FILES = new Set(["consent.json", "cohort.json", "bills.json"]);
+
 // Same rate data the live site uses (app.js fetches rates.json at runtime).
 const ratesJson = JSON.parse(fs.readFileSync(path.join(__dirname, "../public/rates.json"), "utf8"));
 calc.applyRates(ratesJson);
@@ -56,7 +61,22 @@ function argOf(name) {
 }
 const corpusDir = argOf("--corpus");
 const outDir = argOf("--out") || "audit-results";
-const minAccounts = Math.max(1, parseInt(argOf("--min-accounts") || "20", 10));
+const requestedMinAccounts = argOf("--min-accounts");
+let minAccounts = STRATEGY_MIN_ACCOUNTS;
+if (args.includes("--min-accounts") && requestedMinAccounts === null) {
+  console.error("error: --min-accounts needs a positive integer value");
+  process.exit(1);
+}
+if (requestedMinAccounts !== null) {
+  const requestedNumber = Number(requestedMinAccounts);
+  if (!/^\d+$/.test(requestedMinAccounts) || !Number.isSafeInteger(requestedNumber) || requestedNumber < 1) {
+    console.error("error: --min-accounts must be a positive integer");
+    process.exit(1);
+  }
+  // This option can make the bar stricter for an experiment, never weaker than
+  // the product-strategy certification bar.
+  minAccounts = Math.max(STRATEGY_MIN_ACCOUNTS, requestedNumber);
+}
 if (!corpusDir) {
   console.error("usage: node tools/backtest-accounts.js --corpus <dir> [--out <dir>] [--min-accounts N]");
   process.exit(1);
@@ -75,8 +95,17 @@ const CONSENT_KEYS = ["granted", "grantedAt", "method"];
 const BILL_KEYS = ["start", "end", "total", "label", "currency"];
 const COHORT_KEYS = ["territory", "currentPlan", "loadShape", "meter"];
 function refuseUnknownKeys(obj, allow, what, acct) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new Error(`${acct}: ${what} must be a JSON object`);
+  }
   const unknown = Object.keys(obj).filter((k) => !allow.includes(k));
   if (unknown.length) throw new Error(`${acct}: ${what} carries field(s) outside the audit schema (${unknown.join(", ")}) — participant data must stay anonymized to the contract in this file's header.`);
+}
+
+function requireSafeText(value, what, acct, maxLength) {
+  if (typeof value !== "string" || !value.trim() || value.length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${acct}: ${what} must be a short, non-empty text value without control characters`);
+  }
 }
 
 // ---- provenance (reproducibility) --------------------------------------------
@@ -88,7 +117,17 @@ const billYears = calc.RATES.bill.periods.map((p) => p.year);
 
 // ---- one account --------------------------------------------------------------
 function runAccount(dir, acct) {
-  const files = fs.readdirSync(dir);
+  if (!ACCOUNT_ID_PATTERN.test(acct)) {
+    throw new Error(`${acct}: account directory name must be an opaque lowercase id (letters, numbers, _ or - only)`);
+  }
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  const unexpected = entries
+    .filter((entry) => !entry.isFile() || (!FIXED_ACCOUNT_FILES.has(entry.name) && !/\.(csv|tsv|xml|zip)$/i.test(entry.name)))
+    .map((entry) => entry.name);
+  if (unexpected.length) {
+    throw new Error(`${acct}: unexpected corpus entry(s): ${unexpected.join(", ")} — only consent.json, cohort.json, bills.json, and one usage export are allowed`);
+  }
   const meta = { id: acct, status: "ok", consent: null, billsComplete: 0, supported: 0, unsupported: [], incomplete: [], periods: 0, within2: 0, pctWithin2: 0, meanPctError: 0, maxPctError: 0, gate: null, misses: [], error: null };
 
   // consent first: an unconsented bundle never reaches the pipeline.
@@ -97,6 +136,8 @@ function runAccount(dir, acct) {
   refuseUnknownKeys(consent, CONSENT_KEYS, "consent.json", acct);
   if (consent.granted !== true) throw new Error(`${acct}: consent.json does not record granted:true — refused`);
   if (!consent.grantedAt || !consent.method) throw new Error(`${acct}: consent.json lacks grantedAt or method — consent must be dated and attributable to how it was obtained`);
+  requireSafeText(consent.grantedAt, "consent.json.grantedAt", acct, 64);
+  requireSafeText(consent.method, "consent.json.method", acct, 64);
   meta.consent = { grantedAt: String(consent.grantedAt), method: consent.method };
 
   // Diversity is an attested, categorical profile rather than an account
@@ -127,13 +168,17 @@ function runAccount(dir, acct) {
   if (!files.includes("bills.json")) throw new Error(`${acct}: no bills.json — the gate reconciles against actual bills`);
   const rawBills = JSON.parse(fs.readFileSync(path.join(dir, "bills.json"), "utf8"));
   if (!Array.isArray(rawBills)) throw new Error(`${acct}: bills.json must be an array of { start, end, total } bill records`);
+  if (rawBills.length === 0) throw new Error(`${acct}: bills.json must contain at least one transcribed actual bill`);
   rawBills.forEach((b, i) => {
     refuseUnknownKeys(b, BILL_KEYS, `bills.json[${i}]`, acct);
-    if (typeof b.total !== "number" || isNaN(b.total)) throw new Error(`${acct}: bills.json[${i}] lacks a numeric total — the transcribed actual bill amount in dollars`);
+    if (typeof b.total !== "number" || !Number.isFinite(b.total)) throw new Error(`${acct}: bills.json[${i}] lacks a finite numeric total — the transcribed actual bill amount in dollars`);
+    if (b.currency !== undefined && b.currency !== "USD") throw new Error(`${acct}: bills.json[${i}] uses unsupported currency ${String(b.currency)} — actual Con Edison bills must be in USD`);
   });
   // The corpus schema says `total` (what a transcribed bill shows); the
-  // pipeline's normalized bill record says `cost`.
-  const bills = rawBills.map((b) => ({ start: b.start, end: b.end, cost: b.total, label: b.label, currency: b.currency }));
+  // pipeline's normalized bill record says `cost`. Do not carry a caller's
+  // free-form label into the report: calc.js derives an anonymized period label
+  // from the dates, so a handwritten label cannot leak participant data.
+  const bills = rawBills.map((b) => ({ start: b.start, end: b.end, cost: b.total }));
 
   return usagePromise.then((text) => {
     const parsed = calc.parse(text);
@@ -162,7 +207,7 @@ function runAccount(dir, acct) {
           actualTotal: +r.actualTotal.toFixed(2), modeledTotal: +r.modeledTotal.toFixed(2),
           delta: +r.delta.toFixed(4), pctError: +r.pctError.toFixed(4),
           band: r.pctError <= accuracy.warnPct ? "warn" : "fail",
-          kwh: +r.kwh.toFixed(1), observedDays: r.observedDays, billDays: r.billDays,
+          observedDays: r.observedDays, billDays: r.billDays,
           modeledComponents: comps, worstModeledComponent: worst ? `${worst.component} ($${worst.amount.toFixed(2)})` : null,
         };
       });
@@ -172,15 +217,21 @@ function runAccount(dir, acct) {
 }
 
 // ---- the corpus ---------------------------------------------------------------
-const acctDirs = fs.readdirSync(corpusDir, { withFileTypes: true })
+const corpusEntries = fs.readdirSync(corpusDir, { withFileTypes: true });
+const acctDirs = corpusEntries
   .filter((d) => d.isDirectory())
   .map((d) => d.name)
   .sort();
 
 const results = [];
-const refusals = [];
+const refusals = corpusEntries
+  .filter((d) => !d.isDirectory())
+  .map((d) => ({ id: d.name, error: "corpus root contains a non-account entry; put only account directories under --corpus" }));
+acctDirs.filter((acct) => !ACCOUNT_ID_PATTERN.test(acct)).forEach((acct) => {
+  refusals.push({ id: acct, error: "account directory name must be an opaque lowercase id (letters, numbers, _ or - only)" });
+});
 let pending = Promise.resolve();
-acctDirs.forEach((acct) => {
+acctDirs.filter((acct) => ACCOUNT_ID_PATTERN.test(acct)).forEach((acct) => {
   pending = pending.then(() =>
     Promise.resolve() // defer: a synchronous throw (no consent, bad schema) must land in refusals, not abort the run
       .then(() => runAccount(path.join(corpusDir, acct), acct))
@@ -219,8 +270,12 @@ pending.then(() => {
     generatedAt: new Date().toISOString(),
     gitHead,
     rates: { asOf: calc.RATES.meta.asOf, reviewedThrough: calc.RATES.meta.reviewedThrough, billYears, accuracy },
-    corpus: path.resolve(corpusDir),
+    // Never put a user-selected filesystem path in the durable report. The
+    // path can itself contain a participant name; the command line is the
+    // reproducibility instruction and gitHead/rates are the provenance.
+    corpus: "<external corpus>",
     minAccounts,
+    strategyMinimumAccounts: STRATEGY_MIN_ACCOUNTS,
     accounts: results,
     diversity: { dimensions: diversity, diverseDimensions, diverse },
     refusals,
@@ -265,7 +320,7 @@ function renderSummary(r) {
   const lines = [];
   lines.push(`# Stage-1 bill-reconstruction backtest — anonymized results summary`);
   lines.push("");
-  lines.push(`Generated ${r.generatedAt} by \`${r.tool}\` from the corpus at \`${r.corpus}\`.`);
+  lines.push(`Generated ${r.generatedAt} by \`${r.tool}\` from an external corpus.`);
   lines.push(`Rates: ${r.rates.asOf} (reviewed through ${r.rates.reviewedThrough}; bill-rate years ${r.rates.billYears.join(", ")}).`);
   lines.push(`Diversity: ${r.diversity.diverse ? "PASS" : "FAIL"} across ${r.diversity.diverseDimensions.join(", ") || "no dimensions"}; cohort counts are recorded in backtest-results.json.`);
   if (r.gitHead) lines.push(`Pipeline at commit \`${r.gitHead}\`; accuracy thresholds: pass ${r.rates.accuracy.passPct}%, warn ${r.rates.accuracy.warnPct}%, gate fraction ${r.rates.accuracy.gateFraction * 100}%.`);
@@ -283,7 +338,7 @@ function renderSummary(r) {
     lines.push("");
     missed.forEach((m) => {
       m.misses.forEach((f) => {
-        lines.push(`- **${m.id}** · ${f.label} — modeled $${f.modeledTotal.toFixed(2)} vs actual $${f.actualTotal.toFixed(2)} (Δ $${f.delta >= 0 ? "+" : ""}${f.delta.toFixed(2)}, ${f.pctError.toFixed(2)}%, ${f.band} band; ${f.kwh} kWh over ${f.observedDays}/${f.billDays} days); largest modeled component: ${f.worstModeledComponent}. The full component breakdown is in backtest-results.json.`);
+        lines.push(`- **${m.id}** · ${f.label} — modeled $${f.modeledTotal.toFixed(2)} vs actual $${f.actualTotal.toFixed(2)} (Δ $${f.delta >= 0 ? "+" : ""}${f.delta.toFixed(2)}, ${f.pctError.toFixed(2)}%, ${f.band} band; interval coverage ${f.observedDays}/${f.billDays} days); largest modeled component: ${f.worstModeledComponent}. The full component breakdown is in backtest-results.json.`);
       });
     });
   }
@@ -302,6 +357,6 @@ function renderSummary(r) {
     });
   }
   lines.push("");
-  lines.push(`Reproduce: \`node tools/backtest-accounts.js --corpus <corpus-dir> --out ${outDir}\`. The corpus lives outside the repo (participant data is never committed); this summary carries anonymized ids only.`);
+  lines.push(`Reproduce: \`node tools/backtest-accounts.js --corpus <corpus-dir> --out <out-dir>\`. The corpus lives outside the repo (participant data is never committed); this summary carries anonymized ids only.`);
   return lines.join("\n") + "\n";
 }

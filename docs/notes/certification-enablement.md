@@ -70,6 +70,14 @@ participant payloads.
    node tools/backtest-accounts.js --corpus "$CORPUS" --out "$OUT"
    ```
 
+   The runner accepts one account directory per opaque lowercase id. Each
+   bundle must contain only `consent.json`, categorical `cohort.json`,
+   `bills.json`, and exactly one CSV/TSV/XML/ZIP usage export; stray files and
+   unconsented bundles are refused. `--min-accounts` can require more than 20
+   accounts for a stricter run, but never lowers the strategy's mandatory
+   20-account floor. Bill labels are regenerated from dates in the report so
+   handwritten participant text cannot enter the anonymized artifact.
+
    Exit 0 is the only accuracy result that can be proposed for certification.
    Exit 1 is a failed/refused audit and exit 2 is incomplete; neither may arm
    a flag. The generated JSON records the commit, rate provenance, account
