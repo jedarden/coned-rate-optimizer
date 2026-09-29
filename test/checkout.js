@@ -1,5 +1,6 @@
-/* Deterministic checkout contract tests. Stripe is replaced by a fetch stub;
- * the real browser adapter and Pages Functions still run unchanged. */
+/* End-to-end checkout contract tests. Stripe is replaced by a fetch stub;
+ * the real browser adapter, Pages Functions, and payment state machine still
+ * run unchanged through the composed browser-to-provider paths. */
 "use strict";
 
 const assert = require("assert");
@@ -100,6 +101,94 @@ async function run() {
       !stripeCall.init.body.includes("billing") && !stripeCall.init.body.includes("99999"),
     "usage, billing, account, and caller-supplied pricing data never reach Stripe");
 
+    // Compose the real browser adapter with both Pages Functions. The only
+    // provider stub is the hosted-payment boundary; the browser request and
+    // server verification still cross the same interfaces as production.
+    const validSession = {
+      id: "cs_fixture", mode: "payment", status: "complete", payment_status: "paid", amount_total: 2900,
+      currency: "usd", metadata: { product: "report", amount_cents: "2900", policy_version: "1" }
+    };
+    const browserLocation = { search: "", assigned: null, assign(url) { this.assigned = url; } };
+    const browserRequests = [];
+    let providerSession = validSession;
+    const serverFetch = async (url, init) => {
+      const absolute = new URL(url, "https://app.test");
+      browserRequests.push({ url: absolute, init });
+      if (absolute.pathname === "/api/checkout/create") {
+        const savedFetch = global.fetch;
+        try {
+          global.fetch = async () => response({ id: "cs_fixture", url: "https://checkout.stripe.test/session" });
+          const created = await create.onRequestPost({
+            request: new Request(absolute, init), env: baseEnv
+          });
+          return created;
+        } finally { global.fetch = savedFetch; }
+      }
+      if (absolute.pathname === "/api/checkout/session") {
+        const savedFetch = global.fetch;
+        try {
+          global.fetch = async () => response(providerSession);
+          return await session.onRequestGet({ request: new Request(absolute, init), env: baseEnv });
+        } finally { global.fetch = savedFetch; }
+      }
+      throw new Error("unexpected browser request: " + absolute.pathname);
+    };
+    const hosted = checkoutProvider({
+      location: browserLocation,
+      fetch: serverFetch
+    });
+    const redirect = await hosted.charge({
+      product: "report", amount: 29, currency: "usd", policyVersion: 1,
+      usage: { intervals: [{ kwh: 999 }] }, billing: { total: 99999 }
+    });
+    assert.strictEqual(redirect.status, "redirect", "the browser follows create into hosted checkout");
+    assert.strictEqual(browserLocation.assigned, "https://checkout.stripe.test/session",
+      "the hosted provider URL is handed to the browser");
+    assert.deepStrictEqual(JSON.parse(browserRequests[0].init.body), { product: "report", policyVersion: 1 },
+      "the composed browser-to-server request has exactly product and policyVersion");
+    assert.strictEqual(browserRequests[0].init.body.includes("99999"), false,
+      "billing data is absent from the composed browser request");
+
+    let endToEndFlow = calc.paymentTransition(calc.newPaymentFlow(), "verdict", {
+      paid: { eligible: true, collectible: true, reasons: [], noSavings: null }
+    });
+    endToEndFlow = calc.paymentTransition(endToEndFlow, "consent", {
+      consent: { version: 1, sawPrice: true, sawContents: true, sawNoAffiliation: true,
+        sawEstimateCaveat: true, authorizesCharge: true, grantedAt: 1700000000000 }
+    });
+    endToEndFlow = calc.paymentTransition(endToEndFlow, "charge");
+    endToEndFlow = calc.paymentTransition(endToEndFlow, "redirected");
+    const redirectingFlow = endToEndFlow;
+    assert.strictEqual(endToEndFlow.state, "redirecting", "a create response never unlocks before return verification");
+    browserLocation.search = "?checkout=success&session_id=cs_fixture";
+    const verifiedReturn = await hosted.resume();
+    assert.strictEqual(verifiedReturn.status, "succeeded", "the browser return uses the verified session outcome");
+    endToEndFlow = calc.paymentTransition(endToEndFlow, "checkout_succeeded", {}, { now: 1700000000000 });
+    assert.strictEqual(endToEndFlow.state, "paid", "only the verified hosted session unlocks the report");
+    assert.strictEqual(browserRequests.length, 2, "the composed flow makes one create and one verify request");
+
+    let successOnlyCalls = 0;
+    const successOnly = checkoutProvider({
+      location: { search: "?checkout=success", assign() {} },
+      fetch: async () => { successOnlyCalls += 1; return response({ status: "succeeded" }); }
+    });
+    await assert.rejects(() => successOnly.resume(), (e) => e.code === "CHECKOUT_FAILED",
+      "a success query without a provider session id cannot unlock the report");
+    assert.strictEqual(successOnlyCalls, 0, "a success query alone never calls the verification endpoint");
+
+    browserLocation.search = "?checkout=cancelled";
+    const cancelledReturn = await hosted.resume();
+    assert.strictEqual(cancelledReturn.status, "cancelled", "provider cancellation returns a non-paid outcome");
+    const cancelledFlow = calc.paymentTransition(redirectingFlow, "checkout_cancelled");
+    assert.strictEqual(cancelledFlow.state, "cancelled", "a hosted cancellation preserves the free result");
+
+    providerSession = Object.assign({}, validSession, { status: "open", payment_status: "unpaid" });
+    browserLocation.search = "?checkout=success&session_id=cs_fixture";
+    const pendingReturn = await hosted.resume();
+    assert.strictEqual(pendingReturn.status, "pending", "an uncompleted provider session does not unlock");
+    const pendingFlow = calc.paymentTransition(redirectingFlow, "checkout_failed");
+    assert.notStrictEqual(pendingFlow.state, "paid", "an uncompleted provider session cannot unlock");
+
     for (const invalid of [
       { product: "concierge", policyVersion: 1 },
       { product: "report", policyVersion: 2 },
@@ -114,10 +203,6 @@ async function run() {
       assert.strictEqual(forwarded, false, "invalid checkout input is rejected before contacting Stripe");
     }
 
-    const validSession = {
-      id: "cs_fixture", mode: "payment", status: "complete", payment_status: "paid", amount_total: 2900,
-      currency: "usd", metadata: { product: "report", amount_cents: "2900", policy_version: "1" }
-    };
     global.fetch = async () => response(validSession);
     const verified = await session.onRequestGet({ request: request("https://app.test/api/checkout/session?session_id=cs_fixture"), env: baseEnv });
     assert.strictEqual(verified.status, 200, "a paid matching session verifies successfully");
@@ -226,6 +311,57 @@ async function run() {
     P.providerCertified = true;
     const collectible = calc.paidConversion(qualified);
     assert.strictEqual(collectible.collectible, true, "both independent certifications are required before collection");
+
+    // A provider error is a retryable checkout failure, not a report unlock.
+    let providerFailures = 0;
+    const failingProvider = checkoutProvider({
+      fetch: async () => { providerFailures += 1; return response({ code: "provider_error" }, 502); },
+      location: { search: "", assign() {} }
+    });
+    const retryConsent = { version: P.policyVersion, sawPrice: true, sawContents: true,
+      sawNoAffiliation: true, sawEstimateCaveat: true, authorizesCharge: true, grantedAt: 1700000000000 };
+    let failedFlow = calc.paymentTransition(calc.newPaymentFlow(), "verdict", { paid: collectible });
+    failedFlow = calc.paymentTransition(failedFlow, "consent", { consent: retryConsent });
+    for (let attempt = 1; attempt <= P.maxPaymentAttempts; attempt += 1) {
+      failedFlow = calc.paymentTransition(failedFlow, "charge");
+      await assert.rejects(() => failingProvider.charge({ product: "report", amount: 29, currency: "usd", policyVersion: 1 }),
+        (e) => e.code === "CHECKOUT_FAILED", "a provider error stays a failed checkout");
+      failedFlow = calc.paymentTransition(failedFlow, "charge_failed");
+      if (attempt < P.maxPaymentAttempts) {
+        assert.strictEqual(failedFlow.state, "failed", "a provider error leaves a bounded retry available");
+      }
+    }
+    assert.strictEqual(providerFailures, P.maxPaymentAttempts, "provider failures are attempted only up to the configured bound");
+    assert.strictEqual(failedFlow.state, "abandoned", "the final provider failure withdraws the offer");
+    assert.strictEqual(calc.paymentTransition(failedFlow, "charge").state, "abandoned",
+      "an exhausted checkout cannot start a fourth attempt");
+    assert.strictEqual(calc.paidConversion(qualified).eligible, true,
+      "provider failure leaves the free eligible result available");
+
+    // Every certification flag combination is fail-closed on the server. The
+    // browser gate is checked separately below because it is an independent
+    // deployment decision, not a provider response.
+    for (const disabled of [
+      { REPORT_CHARGING_CERTIFIED: "false", PAYMENT_PROVIDER_CERTIFIED: "true" },
+      { REPORT_CHARGING_CERTIFIED: "true", PAYMENT_PROVIDER_CERTIFIED: "false" },
+      { REPORT_CHARGING_CERTIFIED: "false", PAYMENT_PROVIDER_CERTIFIED: "false" }
+    ]) {
+      const disabledEnv = Object.assign({}, baseEnv, disabled);
+      const disabledResult = await create.onRequestPost({
+        request: request("https://app.test/api/checkout/create", "POST", { product: "report", policyVersion: 1 }),
+        env: disabledEnv
+      });
+      assert.strictEqual(disabledResult.status, 503,
+        "a disabled certification flag keeps server checkout unavailable");
+    }
+    P.chargingCertified = false;
+    P.providerCertified = true;
+    assert.strictEqual(calc.paidConversion(qualified).collectible, false,
+      "disabled charging certification keeps the browser offer non-collectible");
+    P.chargingCertified = true;
+    P.providerCertified = false;
+    assert.strictEqual(calc.paidConversion(qualified).collectible, false,
+      "disabled provider certification keeps the browser offer non-collectible");
   } finally {
     P.chargingCertified = originalFlags.chargingCertified;
     P.providerCertified = originalFlags.providerCertified;
