@@ -193,6 +193,61 @@ run("Recheck fingerprints and local deletion", () => {
     "deletion removes the complete monitoring record immediately");
 });
 
+run("Schema handling and re-analysis after deletion", () => {
+  const store = memoryStore();
+  store.setItem(monitor.KEY, "{not json");
+  const corrupt = monitor.load(store);
+  assert(corrupt.schema === monitor.SCHEMA && corrupt.months.length === 0 && corrupt.bills.length === 0,
+    "corrupt stored JSON is replaced with a fresh current-schema series");
+
+  store.setItem(monitor.KEY, JSON.stringify({ schema: monitor.SCHEMA + 1, months: [] }));
+  const foreign = monitor.load(store);
+  assert(foreign.schema === monitor.SCHEMA && foreign.months.length === 0,
+    "a record from a newer schema version is rejected without being rendered");
+
+  store.setItem(monitor.KEY, JSON.stringify({ schema: monitor.SCHEMA, months: "not an array" }));
+  const malformed = monitor.load(store);
+  assert(malformed.schema === monitor.SCHEMA && malformed.months.length === 0,
+    "a record with a malformed month list starts fresh");
+
+  store.setItem(monitor.KEY, JSON.stringify({
+    schema: monitor.SCHEMA,
+    months: [month("2026-02", 250, 150)],
+    profile: { territory: "nyc", currentPlan: "standard", meter: "smart", token: "ignore me" }
+  }));
+  const compatible = monitor.load(store);
+  assert(compatible.months.length === 1 && compatible.months[0].ym === "2026-02" &&
+         !JSON.stringify(compatible).includes("ignore me"),
+    "the current schema remains loadable while unknown profile fields are stripped");
+
+  let stored = monitor.ingest(monitor.blank(), {
+    source: "file", importedAt: 10000, plan: "standard",
+    profile: { territory: "nyc", currentPlan: "standard", meter: "smart" },
+    months: [month("2025-12", 500, 350)],
+    bills: [bill(20251201, 20251231, 175, "old retained bill")]
+  });
+  const oldAnalysis = calc.analyze(monitor.restoreParsed(stored), { profile: stored.profile });
+  stored.recheck = monitor.recheck(stored, oldAnalysis, { trigger: "usage", now: 10001 }).state;
+  monitor.save(stored, store);
+  monitor.clear(store);
+  assert(store.getItem(monitor.KEY) === null && monitor.load(store) === null,
+    "deletion removes months, bills, profile, timeline, and recheck state at once");
+
+  stored = monitor.ingest(monitor.load(store) || monitor.blank(), {
+    source: "file", importedAt: 11000, plan: "standard",
+    profile: { territory: "nyc", currentPlan: "standard", meter: "smart" },
+    months: [month("2026-01", 100, 50)],
+    bills: [bill(20260101, 20260131, 35, "new bill")]
+  });
+  const newAnalysis = calc.analyze(monitor.restoreParsed(stored), { profile: stored.profile });
+  const freshRecheck = monitor.recheck(stored, newAnalysis, { trigger: "usage", now: 11001 });
+  assert(stored.months.length === 1 && stored.months[0].ym === "2026-01" &&
+         !stored.bills.some((b) => b.label === "old retained bill") &&
+         newAnalysis.months.length === 1 && newAnalysis.months[0].ym === "2026-01" &&
+         freshRecheck.initialized === true && freshRecheck.previous === null,
+    "a post-deletion import is analyzed from a blank series without old data or a stale baseline");
+});
+
 run("Sample exclusion, raw-data exclusion, and no-network guarantee", () => {
   const appSource = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
   const sampleStart = appSource.indexOf('$("sample-btn").addEventListener("click"');

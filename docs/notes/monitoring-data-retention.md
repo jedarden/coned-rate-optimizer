@@ -109,11 +109,12 @@ the landing view — it renders without scrolling the page.
 - `test/monitoring-retention.js` pins the focused contract gate: imports,
   newest-wins merging with revision counts, backward extension (an older import
   extends the window rather than erasing it), the 36-bucket trim with bill
-  fall-out, plan timelines, recheck fingerprints, deletion, sample and raw-data
+  fall-out, plan timelines, schema/version handling, recheck fingerprints,
+  immediate deletion and clean re-analysis afterward, sample and raw-data
   exclusion, and the no-network localStorage guarantee. The broader
   `test/test.js` Test 21 additionally covers per-segment repricing, unpriced
-  demand counterfactuals, corrupt/foreign-schema input, and `save()` with no
-  storage (the UI surfaces the failure; an import is never silently dropped).
+  demand counterfactuals, and `save()` with no storage (the UI surfaces the
+  failure; an import is never silently dropped).
 - `tools/verify-gbc-browser.js` drives it live in Chromium: connect → pull →
   file import merges into the series → reload restores the retained history →
   "Delete stored data" clears `localStorage` and the page forgets.

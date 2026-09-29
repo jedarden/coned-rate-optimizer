@@ -5,7 +5,7 @@ This directory contains automated tests and fixtures for the ConEd Rate Optimize
 ## Files
 
 - `test/test.js` — Automated test suite for calc.js core functionality (and the Green Button Connect client core, Test 17, the month-over-month dashboard & decomposition, Test 18, the persistent monthly monitoring series — merge/revision/rolling retention, bill pruning, the plan timeline, the stitched dashboard, realized switch savings, schema compatibility, fingerprints, demo exclusion, the storage contract, the raw-data privacy boundary, and the no-network localStorage check — Test 21, plus local recommendation rechecks for changed/unchanged usage and rates — Test 22)
-- `test/monitoring-retention.js` — Focused monitoring contract tests: imports, month merging and revisions, 36-month and bill retention, plan timelines, recheck fingerprints, deletion, sample/raw-data exclusion, and the no-network localStorage guarantee
+- `test/monitoring-retention.js` — Focused monitoring contract tests: imports, month merging and revisions, 36-month and bill retention, plan timelines, schema/version handling, recheck fingerprints, immediate deletion and clean re-analysis, sample/raw-data exclusion, and the no-network localStorage guarantee
 - `test/checkout.js` — Deterministic hosted-checkout adapter and Pages Function tests for successful, cancelled, failed, unavailable, and ineligible $29 report paths
 - `test/backtest-harness.js` — End-to-end tests for the consented, diverse 20-account audit harness: passing gate, every-miss reporting, incomplete corpus, and refusal paths
 - `test/certification-workflow.js` — Durable certification artifact schema, miss documentation, provider evidence, reviewer approval, flag enablement, and free-result preservation contracts
