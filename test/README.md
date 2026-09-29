@@ -13,6 +13,7 @@ This directory contains automated tests and fixtures for the ConEd Rate Optimize
 - `test/analytics-privacy.js` — The analytics privacy contract (`docs/notes/analytics-privacy.md`): the Cloudflare Web Analytics allowlist (`sample_click`, `parse_success`, `parse_error`) is exact and each event ships as a bare static name — a forbidden-class contamination battery (filename, raw file content, an interval row, billing figures, an account id, a GBC token, the parse-error message) proves none of it can ride along even when a caller attaches it; composed or unknown names fail closed; a static scan keeps the Cloudflare sender reachable only through `public/analytics.js`; every call site passes a single static allowlisted literal; the page's beacon config carries nothing but the site token; README, the privacy notes, and the page copy are regression-checked to distinguish the no-application-server file boundary from the intentional Cloudflare analytics request
 - `test/gbc-production-smoke.js` — Deterministic tests for the production smoke checker: public config and registered redirect validation, same-origin rejection, missing Pages bindings, upstream `invalid_client`, the expected synthetic-code `invalid_grant` health result, the authorization callback, direct interval/billing feed retrieval, exact token-endpoint request shape, no usage/billing/token bytes in exchange requests, and unreachable-upstream handling. The live command is `scripts/smoke-gbc-production.js`; it never sends a credential or prints a response body.
 - `tools/verify-file-import-privacy.js` — Browser regression for the real CSV, XML/ESPI, and deflated ZIP file-import paths: records application-origin and analytics requests, permits only required static requests plus bare documented event names, and covers successful and failed parses.
+- `tools/verify-agentation-mount.js` — Browser deploy check: asserts the `#agentation-root` and rendered toolbar mount after `?feedback=1`, and that normal visits fetch no Agentation payload; the local-server form runs in `scripts/definition-of-done.sh`.
 - `test/fixtures/sample-greenbutton.csv` — Sample Green Button CSV data for testing
 - `test/fixtures/sample-greenbutton.xml` — The same data as a Green Button ESPI Atom feed (epoch seconds in America/New_York, Wh values), for XML tests — also served by the GBC sandbox as the connected interval feed, so the connected path is checked byte-for-byte against the file path
 - `test/fixtures/bill-history-sc1-nyc.json` — ConEd's published NYC SC1 bill history (2023–2025, 300 kWh sample month), the ground truth the bill-reconstruction tests reproduce
@@ -57,6 +58,13 @@ NODE_PATH=<dir containing playwright> CHROME_PATH=<chromium binary> node tools/v
 # Drives CSV, XML/ESPI, deflated ZIP, malformed CSV/XML, and corrupt ZIP imports
 # in Chromium. The application-origin server records every request; the
 # Cloudflare beacon is locally recorded as name-only analytics.
+```
+
+### Run the Agentation deploy check (needs Playwright + Chromium)
+```bash
+node tools/verify-agentation-mount.js --local
+# The --local form serves public itself and is included in
+# scripts/definition-of-done.sh. Pass a deployed URL to check production.
 ```
 
 ### Run verification with your own data

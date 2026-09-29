@@ -30,3 +30,7 @@ node test/gbc-sandbox.js
 bash -n scripts/provision-gbc-bindings.sh
 node test/gbc-production-smoke.js
 node verify.js
+# Browser-level deploy check: exercise the shipped page through a local static
+# server and require Agentation's root and toolbar to mount after load. The
+# same check also proves normal visitors do not fetch the feedback payload.
+node tools/verify-agentation-mount.js --local

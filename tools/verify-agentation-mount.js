@@ -6,6 +6,7 @@
 
    Usage:
      node tools/verify-agentation-mount.js [base-url]
+     node tools/verify-agentation-mount.js --local
    base-url defaults to http://localhost:8137 (see "Run locally" in the
    README; 8000 is often taken by another app on this shared box); pass
    https://coned.jedarden.com to check production.
@@ -24,10 +25,144 @@
    CHROME_PATH at a nix-provided chromium instead:
      CHROME_PATH=/nix/store/53p8msmqxpi829zdrw6qkvaamidxy9cj-chromium-151.0.7922.173/bin/chromium
 */
-const base = (process.argv[2] || "http://localhost:8137").replace(/\/+$/, "");
+const fs = require("fs");
+const http = require("http");
+const os = require("os");
+const path = require("path");
+const { execFileSync } = require("child_process");
+const useLocalServer = process.argv[2] === "--local";
+let base = useLocalServer ? null : (process.argv[2] || "http://localhost:8137").replace(/\/+$/, "");
+
+function isExecutable(candidate) {
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findChromium() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+
+  for (const command of ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]) {
+    try {
+      const candidate = execFileSync("which", [command], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (candidate && isExecutable(candidate)) return candidate;
+    } catch {
+      // Try the next conventional browser location.
+    }
+  }
+
+  // NixOS keeps the system Chromium binary in an immutable store path whose
+  // hash changes. Find the current unwrapped package without pinning a hash.
+  try {
+    const candidates = fs.readdirSync("/nix/store")
+      .filter((entry) => entry.includes("chromium-unwrapped-"))
+      .sort()
+      .reverse();
+    for (const entry of candidates) {
+      const candidate = path.join("/nix/store", entry, "libexec", "chromium", "chromium");
+      if (isExecutable(candidate)) return candidate;
+    }
+  } catch {
+    // This is not a NixOS host.
+  }
+
+  // Playwright's downloaded browsers do not always include the headless-shell
+  // binary expected by its launcher. A full Chromium in the cache is enough.
+  for (const cacheRoot of [path.join(os.homedir(), ".cache", "ms-playwright")]) {
+    try {
+      const versions = fs.readdirSync(cacheRoot)
+        .filter((entry) => entry.startsWith("chromium-"))
+        .sort()
+        .reverse();
+      for (const version of versions) {
+        const versionRoot = path.join(cacheRoot, version);
+        for (const platform of fs.readdirSync(versionRoot).filter((entry) => entry.startsWith("chrome-linux"))) {
+          const candidate = path.join(versionRoot, platform, "chrome");
+          if (isExecutable(candidate)) return candidate;
+        }
+      }
+    } catch {
+      // The cache is optional.
+    }
+  }
+
+  return null;
+}
+
+function loadPlaywright() {
+  const candidates = [
+    "playwright",
+    process.env.PLAYWRIGHT_MODULE,
+    "/home/coding/spaxel/dashboard/node_modules/playwright",
+  ].filter(Boolean);
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      return require(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+function startLocalServer() {
+  const publicRoot = path.resolve(__dirname, "../public");
+  const contentTypes = {
+    ".css": "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+  };
+  const server = http.createServer((request, response) => {
+    let pathname;
+    try {
+      pathname = decodeURIComponent(new URL(request.url || "/", "http://localhost").pathname);
+    } catch {
+      response.writeHead(400);
+      response.end("bad request");
+      return;
+    }
+    if (pathname === "/") pathname = "/index.html";
+    const file = path.resolve(publicRoot, `.${pathname}`);
+    if (file !== publicRoot && !file.startsWith(`${publicRoot}${path.sep}`)) {
+      response.writeHead(403);
+      response.end("forbidden");
+      return;
+    }
+    fs.stat(file, (statError, stat) => {
+      if (statError || !stat.isFile()) {
+        response.writeHead(404);
+        response.end("not found");
+        return;
+      }
+      response.writeHead(200, { "content-type": contentTypes[path.extname(file)] || "application/octet-stream" });
+      fs.createReadStream(file).pipe(response);
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve(server);
+    });
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve) => server.close(() => resolve()));
+}
+
 let chromium;
 try {
-  ({ chromium } = require("playwright"));
+  ({ chromium } = loadPlaywright());
 } catch {
   console.error(
     "playwright not resolvable — run with e.g.\n" +
@@ -43,9 +178,17 @@ function check(ok, label, detail) {
 }
 
 (async () => {
-  const browser = await chromium.launch(
-    process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}
-  );
+  let server;
+  let browser;
+  if (useLocalServer) {
+    server = await startLocalServer();
+    const address = server.address();
+    base = `http://127.0.0.1:${address.port}`;
+  }
+
+  try {
+    const executablePath = findChromium();
+    browser = await chromium.launch(executablePath ? { executablePath } : {});
 
   // Feedback mode: the toolbar must actually mount — the canonical
   // #agentation-root marker AND the rendered toolbar (v3 portals it to
@@ -88,12 +231,16 @@ function check(ok, label, detail) {
     await page.close();
   }
 
-  await browser.close();
-  if (failures) {
-    console.error(`\nFAIL: ${failures} check(s) failed`);
-    process.exit(1);
+    if (failures) {
+      console.error(`\nFAIL: ${failures} check(s) failed`);
+      process.exitCode = 1;
+    } else {
+      console.log("\nOK: toolbar mounts in feedback mode; normal visitors fetch nothing extra");
+    }
+  } finally {
+    if (browser) await browser.close();
+    if (server) await closeServer(server);
   }
-  console.log("\nOK: toolbar mounts in feedback mode; normal visitors fetch nothing extra");
 })().catch((e) => {
   console.error("verification run failed:", e);
   process.exit(2);

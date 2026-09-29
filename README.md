@@ -118,7 +118,7 @@ verify.js          <- Node verification script
 scripts/
   validate-rates.js         <- tariff data gate (docs/tariff-update-workflow.md)
   check-rate-drift.js       <- strict deploy-time mirror check for rates.json/calc.js
-  definition-of-done.sh     <- gate + test suite + sandbox + verify: run before every push
+  definition-of-done.sh     <- gate + tests + browser deploy checks: run before every push
   provision-gbc-bindings.sh <- out-of-band Pages binding provisioning; values stay on stdin
   smoke-gbc-production.js   <- live production binding/upstream-auth smoke check; logs no bodies
 tools/
@@ -156,14 +156,17 @@ React, no Agentation CDN request, no toolbar. The page's separate Cloudflare
 Web Analytics beacon remains the intentional, name-only analytics path; it
 never receives file bytes or usage/billing contents. Agentation itself makes no
 network calls after its pinned modules load; it renders locally and copies
-feedback text to your clipboard. The mount is verified by
+feedback text to your clipboard. Its bare React imports are resolved by the
+import map in `public/index.html`. The mount is verified by
 `#agentation-root` existing after load (never by grepping for the script
-tag):
+tag). The browser check is also part of `scripts/definition-of-done.sh` and
+runs against a temporary local static server:
 
 ```bash
+node tools/verify-agentation-mount.js --local       # definition-of-done check
 python3 -m http.server -d public 8000 &
 NODE_PATH=/home/coding/spaxel/dashboard/node_modules \
-  node tools/verify-agentation-mount.js            # local
+  node tools/verify-agentation-mount.js http://localhost:8000
 node tools/verify-agentation-mount.js https://coned.jedarden.com   # production
 ```
 

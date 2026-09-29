@@ -16,6 +16,20 @@
   <meta name="twitter:description" content="Will switching your ConEd rate plan lower your bill? Find out — privately, in your browser." />
   <meta name="twitter:image" content="https://coned.jedarden.com/og.png" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- Agentation and its React dependencies use bare module specifiers. Keep
+       the map before the feedback module so browsers can resolve them when
+       ?feedback=1 loads the toolbar. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react-dom": "https://esm.sh/react-dom@18.3.1",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+      "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+      "agentation": "https://esm.sh/agentation@3.1.2?deps=react@18.3.1,react-dom@18.3.1&bundle"
+    }
+  }
+  </script>
   <!-- Cloudflare Web Analytics (cookie-less, privacy-safe) -->
   <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "PLACEHOLDER_TOKEN"}'></script>
   <script type="application/ld+json">
